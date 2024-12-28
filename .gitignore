@@ -38,6 +38,7 @@ Thumbs.db
 .fseventsd
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
+.specstory
 
 # IDE
 .idea/

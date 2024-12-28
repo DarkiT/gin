@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSE Test</title>
+    <style>
+        .client-list {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f5f5f5;
+        }
+        .client {
+            margin: 5px 0;
+            padding: 5px;
+            border: 1px solid #ddd;
+            cursor: pointer;
+        }
+        .client:hover {
+            background: #e0e0e0;
+        }
+        .client.selected {
+            background: #d4edda;
+            border-color: #c3e6cb;
+        }
+        .message-input {
+            margin: 10px 0;
+            padding: 10px;
+            display: none;
+        }
+        .message-input.show {
+            display: block;
+        }
+        .broadcast-input {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 4px;
+        }
+        
+        .broadcast-input select {
+            margin-bottom: 10px;
+            padding: 5px;
+            width: 200px;
+        }
+        
+        .broadcast-input textarea {
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>SSE 测试</h1>
+    <div>
+        <button onclick="closeHub()">关闭 SSE</button>
+        <button onclick="restartHub()">重启 SSE</button>
+        <button onclick="reconnect()">重新连接</button>
+        <button onclick="refreshClients()">刷新客户端列表</button>
+    </div>
+
+    <div>
+        <h3>广播消息</h3>
+        <div class="broadcast-input">
+            <select id="eventType">
+                <option value="user.created">用户创建</option>
+                <option value="user.updated">用户更新</option>
+                <option value="system.notice" selected>系统通知</option>
+            </select>
+            <textarea id="broadcastContent" rows="4" cols="50" placeholder="请输入要广播的消息"></textarea><br>
+            <button onclick="sendBroadCast()">发送广播</button>
+        </div>
+    </div>
+
+    <div>
+        <h3>在线客户端列表：</h3>
+        <div id="clientList" class="client-list"></div>
+    </div>
+
+    <!-- 添加消息输入区域 -->
+    <div id="messageInput" class="message-input">
+        <h3>发送消息到: <span id="selectedClient"></span></h3>
+        <textarea id="messageContent" rows="4" cols="50" placeholder="请输入要发送的消息"></textarea><br>
+        <button onclick="sendMessage()">发送消息</button>
+        <button onclick="cancelSend()">取消</button>
+    </div>
+
+    <div id="messages"></div>
+
+
+    <script>
+        let evtSource = null;
+        let currentClientId = null;
+        let selectedClientId = null;
+
+        function connectSSE() {
+            if (evtSource) {
+                evtSource.close();
+            }
+
+            // 先检查服务状态
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.title = '状态: ' + (data.data.running ? '运行中...' : '已停止');
+                    
+                    if (!data.data.running) {
+                        setTimeout(connectSSE, 3000);
+                        return;
+                    }
+
+                    // 生成一个随机的客户端ID
+                    currentClientId = "U"+ Date.now() * 1_000_000;
+                    evtSource = new EventSource('/events?client_id=' + currentClientId);
+                    
+                    evtSource.onopen = function() {
+                        addMessage('SSE 连接已建立, 客户端ID: ' + currentClientId);
+                        refreshClients();
+                    };
+
+                    evtSource.addEventListener('user.created', function(e) {
+                        addMessage('收到 user.created 事件: ' + e.data);
+                    });
+
+                    evtSource.addEventListener('user.updated', function(e) {
+                        addMessage('收到 user.updated 事件: ' + e.data);
+                    });
+
+                    evtSource.addEventListener('ping', function(e) {
+                        console.log('收到心跳:', e.data);
+                    });
+
+                    evtSource.onerror = function(e) {
+                        addMessage('连接错误或关闭');
+                        // 检查服务状态，决定是否重连
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.data.running) {
+                                    setTimeout(connectSSE, 3000);
+                                } else {
+                                    addMessage('SSE 服务未运行，停止重连');
+                                    if (evtSource) {
+                                        evtSource.close();
+                                        evtSource = null;
+                                    }
+                                }
+                            })
+                            .catch(error => {
+                                console.error('检查服务状态失败:', error);
+                                setTimeout(connectSSE, 3000);
+                            });
+                    };
+                    // 添加新的事件监听器
+                    evtSource.addEventListener('system.notice', function(e) {
+                        addMessage('收到系统通知: ' + e.data);
+                    });
+                })
+                .catch(error => {
+                    console.error('检查服务状态失败:', error);
+                    addMessage('检查服务状态失败，3秒后重试');
+                    setTimeout(connectSSE, 3000);
+                });
+        }
+
+        function refreshClients() {
+            fetch('/clients')
+                .then(response => response.json())
+                .then(data => {
+                    const clientList = document.getElementById('clientList');
+                    clientList.innerHTML = '';
+                    data.data.clients.forEach(clientId => {
+                        const div = document.createElement('div');
+                        div.className = 'client';
+                        if (clientId === selectedClientId) {
+                            div.className += ' selected';
+                        }
+                        div.textContent = clientId + (clientId === currentClientId ? ' (当前客户端)' : '');
+                        div.onclick = () => selectClient(clientId);
+                        clientList.appendChild(div);
+                    });
+                });
+        }
+
+        function selectClient(clientId) {
+            selectedClientId = clientId;
+            document.getElementById('selectedClient').textContent = clientId;
+            document.getElementById('messageInput').className = 'message-input show';
+            
+            // 更新选中状态
+            document.querySelectorAll('.client').forEach(el => {
+                el.className = 'client' + (el.textContent.includes(clientId) ? ' selected' : '');
+            });
+        }
+
+        function cancelSend() {
+            selectedClientId = null;
+            document.getElementById('messageInput').className = 'message-input';
+            document.getElementById('messageContent').value = '';
+            
+            // 清除选中状态
+            document.querySelectorAll('.client').forEach(el => {
+                el.className = 'client';
+            });
+        }
+
+        function sendMessage() {
+            if (!selectedClientId) {
+                alert('请先选择一个客户端');
+                return;
+            }
+
+            const message = document.getElementById('messageContent').value;
+            if (!message.trim()) {
+                alert('请输入消息内容');
+                return;
+            }
+
+            fetch(`/send/${selectedClientId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    message: message
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                addMessage(`消息发送${data.code === 200 ? '成功' : '失败'}: ${data.msg}`);
+                if (data.code === 200) {
+                    cancelSend(); // 发送成功后清空输入
+                }
+            })
+            .catch(error => {
+                addMessage('发送失败: ' + error);
+            });
+        }
+
+        function closeHub() {
+            fetch('/close')
+                .then(response => response.json())
+                .then(data => addMessage('Hub 关闭: ' + JSON.stringify(data)));
+        }
+
+        function restartHub() {
+            fetch('/restart')
+                .then(response => response.json())
+                .then(data => reconnect());
+        }
+        
+        function reconnect() {
+            connectSSE();
+        }
+
+        function addMessage(text) {
+            const p = document.createElement('p');
+            p.textContent = text;
+            document.getElementById('messages').appendChild(p);
+        }
+
+        // 定期刷新客户端列表
+        setInterval(refreshClients, 5000);
+
+        // 初始连接
+        connectSSE();
+
+        // 添加广播消息函数
+        function sendBroadCast() {
+            const message = document.getElementById('broadcastContent').value;
+            const event = document.getElementById('eventType').value;
+            
+            if (!message.trim()) {
+                alert('请输入广播消息内容');
+                return;
+            }
+
+            fetch('/broadcast', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    event: event,
+                    message: message
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.code === 200) {
+                    addMessage(`${data.data.message}，已发送给 ${data.data.clients} 个客户端`);
+                    document.getElementById('broadcastContent').value = ''; // 清空输入
+                } else {
+                    addMessage('广播消息发送: ' + data.msg);
+                }
+            })
+            .catch(error => {
+                addMessage('广播消息发送失败: ' + error);
+            });
+        }
+    </script>
+</body>
+</html>
