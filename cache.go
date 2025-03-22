@@ -670,8 +670,8 @@ func (c *Cache[K, V]) Has(key K) bool {
 	return exists
 }
 
-// Increment 对数值类型进行增加操作
-func (c *Cache[K, V]) Increment(key K, increment any) (any, error) {
+// Inc 对数值类型进行增加操作
+func (c *Cache[K, V]) Inc(key K, increment any) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -681,227 +681,484 @@ func (c *Cache[K, V]) Increment(key K, increment any) (any, error) {
 	if found {
 		// 检查是否过期
 		if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
-			found = false
+			// 过期的项应该删除
+			delete(c.items, key)
+			atomic.AddUint64(&c.stats.expiredCount, 1)
+			c.markDirty()
+			return nil, errors.New("键已过期")
 		}
+	} else {
+		// 键不存在
+		return nil, errors.New("键不存在")
 	}
 
-	var newValue any
+	// 根据increment类型和当前值类型进行处理
+	return c.modifyNumericValue(key, item, increment, true)
+}
 
-	switch increment := increment.(type) {
+// Dec 对数值类型进行减少操作
+func (c *Cache[K, V]) Dec(key K, decrement any) (any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, found := c.items[key]
+
+	// 处理值存在的情况
+	if found {
+		// 检查是否过期
+		if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
+			// 过期的项应该删除
+			delete(c.items, key)
+			atomic.AddUint64(&c.stats.expiredCount, 1)
+			c.markDirty()
+			return nil, errors.New("键已过期")
+		}
+	} else {
+		// 键不存在
+		return nil, errors.New("键不存在")
+	}
+
+	// 根据decrement类型和当前值类型进行处理
+	return c.modifyNumericValue(key, item, decrement, false)
+}
+
+// modifyNumericValue 修改数值，isIncrement为true表示增加，false表示减少
+func (c *Cache[K, V]) modifyNumericValue(key K, item cacheItem[V], delta any, isIncrement bool) (any, error) {
+	var newValue any
+	var operation string
+	if isIncrement {
+		operation = "增加"
+	} else {
+		operation = "减少"
+	}
+
+	// 处理增加/减少的值
+	switch deltaValue := delta.(type) {
 	case int:
+		if !isIncrement {
+			deltaValue = -deltaValue // 如果是减法，将值变为负数
+		}
 		switch current := any(item.value).(type) {
 		case int:
-			newValue = current + increment
+			newValue = current + deltaValue
 		case int8:
-			newValue = int(current) + increment
+			newValue = int(current) + deltaValue
 		case int16:
-			newValue = int(current) + increment
+			newValue = int(current) + deltaValue
 		case int32:
-			newValue = int(current) + increment
+			newValue = int(current) + deltaValue
 		case int64:
-			newValue = int(current) + increment
+			newValue = int(current) + deltaValue
 		case uint:
-			newValue = int(current) + increment
+			if !isIncrement && deltaValue > int(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int(current) + deltaValue
 		case uint8:
-			newValue = int(current) + increment
+			if !isIncrement && deltaValue > int(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int(current) + deltaValue
 		case uint16:
-			newValue = int(current) + increment
+			if !isIncrement && deltaValue > int(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int(current) + deltaValue
 		case uint32:
-			newValue = int(current) + increment
+			if !isIncrement && deltaValue > int(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int(current) + deltaValue
 		case uint64:
-			newValue = int(current) + increment
+			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > current {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int(current) + deltaValue
 		case float32:
-			newValue = float64(current) + float64(increment)
+			newValue = float64(current) + float64(deltaValue)
 		case float64:
-			newValue = current + float64(increment)
+			newValue = current + float64(deltaValue)
 		default:
-			return nil, errors.New("the value for this key is not a number")
+			return nil, errors.New("当前键的值不是数值类型")
 		}
 	case int64:
+		if !isIncrement {
+			deltaValue = -deltaValue // 如果是减法，将值变为负数
+		}
 		switch current := any(item.value).(type) {
 		case int:
-			newValue = int64(current) + increment
+			newValue = int64(current) + deltaValue
 		case int8:
-			newValue = int64(current) + increment
+			newValue = int64(current) + deltaValue
 		case int16:
-			newValue = int64(current) + increment
+			newValue = int64(current) + deltaValue
 		case int32:
-			newValue = int64(current) + increment
+			newValue = int64(current) + deltaValue
 		case int64:
-			newValue = current + increment
+			newValue = current + deltaValue
 		case uint:
-			newValue = int64(current) + increment
+			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int64(current) + deltaValue
 		case uint8:
-			newValue = int64(current) + increment
+			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int64(current) + deltaValue
 		case uint16:
-			newValue = int64(current) + increment
+			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int64(current) + deltaValue
 		case uint32:
-			newValue = int64(current) + increment
+			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int64(current) + deltaValue
 		case uint64:
-			newValue = int64(current) + increment
+			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > current {
+				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
+			}
+			newValue = int64(current) + deltaValue
 		case float32:
-			newValue = float64(current) + float64(increment)
+			newValue = float64(current) + float64(deltaValue)
 		case float64:
-			newValue = current + float64(increment)
+			newValue = current + float64(deltaValue)
 		default:
-			return nil, errors.New("the value for this key is not a number")
+			return nil, errors.New("当前键的值不是数值类型")
 		}
 	case float64:
+		if !isIncrement {
+			deltaValue = -deltaValue // 如果是减法，将值变为负数
+		}
 		switch current := any(item.value).(type) {
 		case int:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case int8:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case int16:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case int32:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case int64:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case uint:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case uint8:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case uint16:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case uint32:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case uint64:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case float32:
-			newValue = float64(current) + increment
+			newValue = float64(current) + deltaValue
 		case float64:
-			newValue = current + increment
+			newValue = current + deltaValue
 		default:
-			return nil, errors.New("the value for this key is not a number")
+			return nil, errors.New("当前键的值不是数值类型")
 		}
 	default:
-		return nil, errors.New("increment value must be int, int64 or float64")
+		return nil, errors.New("增减值必须是 int、int64 或 float64 类型")
 	}
 
 	// 尝试将结果转换回原始类型
-	switch any(item.value).(type) {
-	case int:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(n).(V)
-		case int64:
-			item.value = any(int(n)).(V)
-		case float64:
-			item.value = any(int(n)).(V)
-		}
-	case int8:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(int8(n)).(V)
-		case int64:
-			item.value = any(int8(n)).(V)
-		case float64:
-			item.value = any(int8(n)).(V)
-		}
-	case int16:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(int16(n)).(V)
-		case int64:
-			item.value = any(int16(n)).(V)
-		case float64:
-			item.value = any(int16(n)).(V)
-		}
-	case int32:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(int32(n)).(V)
-		case int64:
-			item.value = any(int32(n)).(V)
-		case float64:
-			item.value = any(int32(n)).(V)
-		}
-	case int64:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(int64(n)).(V)
-		case int64:
-			item.value = any(n).(V)
-		case float64:
-			item.value = any(int64(n)).(V)
-		}
-	case uint:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(uint(n)).(V)
-		case int64:
-			item.value = any(uint(n)).(V)
-		case float64:
-			item.value = any(uint(n)).(V)
-		}
-	case uint8:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(uint8(n)).(V)
-		case int64:
-			item.value = any(uint8(n)).(V)
-		case float64:
-			item.value = any(uint8(n)).(V)
-		}
-	case uint16:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(uint16(n)).(V)
-		case int64:
-			item.value = any(uint16(n)).(V)
-		case float64:
-			item.value = any(uint16(n)).(V)
-		}
-	case uint32:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(uint32(n)).(V)
-		case int64:
-			item.value = any(uint32(n)).(V)
-		case float64:
-			item.value = any(uint32(n)).(V)
-		}
-	case uint64:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(uint64(n)).(V)
-		case int64:
-			item.value = any(uint64(n)).(V)
-		case float64:
-			item.value = any(uint64(n)).(V)
-		}
-	case float32:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(float32(n)).(V)
-		case int64:
-			item.value = any(float32(n)).(V)
-		case float64:
-			item.value = any(float32(n)).(V)
-		}
-	case float64:
-		switch n := newValue.(type) {
-		case int:
-			item.value = any(float64(n)).(V)
-		case int64:
-			item.value = any(float64(n)).(V)
-		case float64:
-			item.value = any(n).(V)
-		}
-	default:
-		// 如果不是已知类型，尝试直接赋值
-		var ok bool
-		item.value, ok = newValue.(V)
-		if !ok {
-			return nil, errors.New("cannot convert incremented value back to original type")
-		}
+	var err error
+	item.value, err = c.convertBackToOriginalType(any(item.value), newValue)
+	if err != nil {
+		return nil, err
 	}
 
 	c.items[key] = item
 	c.markDirty()
 
 	return newValue, nil
+}
+
+// convertBackToOriginalType 将计算结果转换回原始类型
+func (c *Cache[K, V]) convertBackToOriginalType(originalValue, newValue any) (V, error) {
+	var result V
+	var ok bool
+
+	switch originalValue.(type) {
+	case int:
+		switch n := newValue.(type) {
+		case int:
+			result, ok = any(n).(V)
+		case int64:
+			result, ok = any(int(n)).(V)
+		case float64:
+			result, ok = any(int(n)).(V)
+		}
+	case int8:
+		switch n := newValue.(type) {
+		case int:
+			if n > 127 || n < -128 {
+				return result, errors.New("结果超出 int8 范围")
+			}
+			result, ok = any(int8(n)).(V)
+		case int64:
+			if n > 127 || n < -128 {
+				return result, errors.New("结果超出 int8 范围")
+			}
+			result, ok = any(int8(n)).(V)
+		case float64:
+			if n > 127 || n < -128 {
+				return result, errors.New("结果超出 int8 范围")
+			}
+			result, ok = any(int8(n)).(V)
+		}
+	case int16:
+		switch n := newValue.(type) {
+		case int:
+			if n > 32767 || n < -32768 {
+				return result, errors.New("结果超出 int16 范围")
+			}
+			result, ok = any(int16(n)).(V)
+		case int64:
+			if n > 32767 || n < -32768 {
+				return result, errors.New("结果超出 int16 范围")
+			}
+			result, ok = any(int16(n)).(V)
+		case float64:
+			if n > 32767 || n < -32768 {
+				return result, errors.New("结果超出 int16 范围")
+			}
+			result, ok = any(int16(n)).(V)
+		}
+	case int32:
+		switch n := newValue.(type) {
+		case int:
+			if int64(n) > 2147483647 || int64(n) < -2147483648 {
+				return result, errors.New("结果超出 int32 范围")
+			}
+			result, ok = any(int32(n)).(V)
+		case int64:
+			if n > 2147483647 || n < -2147483648 {
+				return result, errors.New("结果超出 int32 范围")
+			}
+			result, ok = any(int32(n)).(V)
+		case float64:
+			if n > 2147483647 || n < -2147483648 {
+				return result, errors.New("结果超出 int32 范围")
+			}
+			result, ok = any(int32(n)).(V)
+		}
+	case int64:
+		switch n := newValue.(type) {
+		case int:
+			result, ok = any(int64(n)).(V)
+		case int64:
+			result, ok = any(n).(V)
+		case float64:
+			result, ok = any(int64(n)).(V)
+		}
+	case uint:
+		switch n := newValue.(type) {
+		case int:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			result, ok = any(uint(n)).(V)
+		case int64:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			result, ok = any(uint(n)).(V)
+		case float64:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			result, ok = any(uint(n)).(V)
+		}
+	case uint8:
+		switch n := newValue.(type) {
+		case int:
+			if n < 0 || n > 255 {
+				return result, errors.New("结果超出 uint8 范围")
+			}
+			result, ok = any(uint8(n)).(V)
+		case int64:
+			if n < 0 || n > 255 {
+				return result, errors.New("结果超出 uint8 范围")
+			}
+			result, ok = any(uint8(n)).(V)
+		case float64:
+			if n < 0 || n > 255 {
+				return result, errors.New("结果超出 uint8 范围")
+			}
+			result, ok = any(uint8(n)).(V)
+		}
+	case uint16:
+		switch n := newValue.(type) {
+		case int:
+			if n < 0 || n > 65535 {
+				return result, errors.New("结果超出 uint16 范围")
+			}
+			result, ok = any(uint16(n)).(V)
+		case int64:
+			if n < 0 || n > 65535 {
+				return result, errors.New("结果超出 uint16 范围")
+			}
+			result, ok = any(uint16(n)).(V)
+		case float64:
+			if n < 0 || n > 65535 {
+				return result, errors.New("结果超出 uint16 范围")
+			}
+			result, ok = any(uint16(n)).(V)
+		}
+	case uint32:
+		switch n := newValue.(type) {
+		case int:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			if int64(n) > 4294967295 {
+				return result, errors.New("结果超出 uint32 范围")
+			}
+			result, ok = any(uint32(n)).(V)
+		case int64:
+			if n < 0 || n > 4294967295 {
+				return result, errors.New("结果超出 uint32 范围")
+			}
+			result, ok = any(uint32(n)).(V)
+		case float64:
+			if n < 0 || n > 4294967295 {
+				return result, errors.New("结果超出 uint32 范围")
+			}
+			result, ok = any(uint32(n)).(V)
+		}
+	case uint64:
+		switch n := newValue.(type) {
+		case int:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			result, ok = any(uint64(n)).(V)
+		case int64:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			result, ok = any(uint64(n)).(V)
+		case float64:
+			if n < 0 {
+				return result, errors.New("结果不能为负数")
+			}
+			result, ok = any(uint64(n)).(V)
+		}
+	case float32:
+		switch n := newValue.(type) {
+		case int:
+			result, ok = any(float32(n)).(V)
+		case int64:
+			result, ok = any(float32(n)).(V)
+		case float64:
+			if n > float64(3.4e38) || n < float64(-3.4e38) {
+				return result, errors.New("结果超出 float32 范围")
+			}
+			result, ok = any(float32(n)).(V)
+		}
+	case float64:
+		switch n := newValue.(type) {
+		case int:
+			result, ok = any(float64(n)).(V)
+		case int64:
+			result, ok = any(float64(n)).(V)
+		case float64:
+			result, ok = any(n).(V)
+		}
+	default:
+		// 如果不是已知类型，尝试直接赋值
+		result, ok = newValue.(V)
+	}
+
+	if !ok {
+		return result, errors.New("无法将计算结果转换回原始类型")
+	}
+
+	return result, nil
+}
+
+// IncAtomic 原子增加整数值
+func (c *Cache[K, V]) IncAtomic(key K, n int64) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, found := c.items[key]
+
+	// 处理值存在的情况
+	if found {
+		// 检查是否过期
+		if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
+			// 过期的项应该删除
+			delete(c.items, key)
+			atomic.AddUint64(&c.stats.expiredCount, 1)
+			c.markDirty()
+			return 0, errors.New("键已过期")
+		}
+	} else {
+		// 键不存在，如果启用了自动创建，则创建一个新的键
+		var value int64
+		c.items[key] = cacheItem[V]{
+			value:      any(value).(V),
+			expiration: 0,
+		}
+		c.markDirty()
+		item = c.items[key]
+	}
+
+	// 检查是否可以转换为 int64
+	var current int64
+	switch v := any(item.value).(type) {
+	case int:
+		current = int64(v)
+	case int8:
+		current = int64(v)
+	case int16:
+		current = int64(v)
+	case int32:
+		current = int64(v)
+	case int64:
+		current = v
+	case uint:
+		current = int64(v)
+	case uint8:
+		current = int64(v)
+	case uint16:
+		current = int64(v)
+	case uint32:
+		current = int64(v)
+	case uint64:
+		if v > 9223372036854775807 {
+			return 0, errors.New("值超出 int64 范围")
+		}
+		current = int64(v)
+	default:
+		return 0, errors.New("值不是整数类型")
+	}
+
+	// 执行原子增加
+	newValue := current + n
+
+	// 将结果转换回原始类型
+	convertedItem, err := c.convertBackToOriginalType(any(item.value), newValue)
+	if err != nil {
+		return 0, err
+	}
+
+	item.value = convertedItem
+	c.items[key] = item
+	c.markDirty()
+
+	return newValue, nil
+}
+
+// DecAtomic 原子减少整数值
+func (c *Cache[K, V]) DecAtomic(key K, n int64) (int64, error) {
+	// 调用 IncrementAtomic 并取反 n
+	return c.IncAtomic(key, -n)
 }
 
 //------------------------------------------------------------------------------
