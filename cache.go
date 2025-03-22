@@ -33,19 +33,19 @@ type persistenceData[K comparable, V any] struct {
 
 // Stats 缓存统计信息
 type Stats struct {
-	ItemsCount    int           // 普通缓存项数量
-	ListsCount    int           // 列表数量
-	HitCount      uint64        // 命中次数
-	MissCount     uint64        // 未命中次数
-	LastSaveTime  time.Time     // 最后一次保存时间
-	LastLoadTime  time.Time     // 最后一次加载时间
-	CreationTime  time.Time     // 创建时间
-	MemoryUsage   uint64        // 预估内存使用（字节）
-	ExpiredCount  uint64        // 过期项目计数
-	DeletedCount  uint64        // 删除项目计数
-	PersistPath   string        // 持久化路径
-	IsAutoPersist bool          // 是否开启自动持久化
-	SaveInterval  time.Duration // 保存间隔
+	ItemsCount    int           `json:"itemsCount"`    // 普通缓存项数量
+	ListsCount    int           `json:"listsCount"`    // 列表数量
+	HitCount      uint64        `json:"hitCount"`      // 命中次数
+	MissCount     uint64        `json:"missCount"`     // 未命中次数
+	LastSaveTime  time.Time     `json:"lastSaveTime"`  // 最后一次保存时间
+	LastLoadTime  time.Time     `json:"lastLoadTime"`  // 最后一次加载时间
+	CreationTime  time.Time     `json:"creationTime"`  // 创建时间
+	MemoryUsage   uint64        `json:"memoryUsage"`   // 预估内存使用（字节）
+	ExpiredCount  uint64        `json:"expiredCount"`  // 过期项目计数
+	DeletedCount  uint64        `json:"deletedCount"`  // 删除项目计数
+	PersistPath   string        `json:"persistPath"`   // 持久化路径
+	IsAutoPersist bool          `json:"isAutoPersist"` // 是否开启自动持久化
+	SaveInterval  time.Duration `json:"saveInterval"`  // 保存间隔
 }
 
 // Cache 是一个综合的缓存实现，支持内存缓存和列表缓存

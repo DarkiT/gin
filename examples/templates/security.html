@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f7f9fc;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+        }
+        .section h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 22px;
+        }
+        .section p {
+            color: #555;
+            margin-bottom: 20px;
+        }
+        .security-headers {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 15px;
+            margin-top: 20px;
+        }
+        @media (max-width: 768px) {
+            .security-headers {
+                grid-template-columns: 1fr;
+            }
+        }
+        .header-item {
+            display: flex;
+            flex-direction: column;
+            background-color: white;
+            border: 1px solid #e1e4e8;
+            border-radius: 4px;
+            padding: 15px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .header-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        .header-name {
+            font-weight: bold;
+            color: #2980b9;
+            margin-bottom: 5px;
+        }
+        .header-description {
+            font-size: 14px;
+            color: #606770;
+        }
+        .feature-list {
+            margin-top: 15px;
+        }
+        .feature-item {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 10px;
+            background-color: white;
+            padding: 12px;
+            border-radius: 4px;
+            border: 1px solid #e1e4e8;
+        }
+        .feature-icon {
+            margin-right: 10px;
+            color: #2ecc71;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        .feature-content {
+            flex: 1;
+        }
+        .feature-title {
+            font-weight: 500;
+            color: #2c3e50;
+            margin-bottom: 3px;
+        }
+        .feature-description {
+            font-size: 14px;
+            color: #606770;
+        }
+        .code-block {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px 20px;
+            border-radius: 4px;
+            font-family: monospace;
+            overflow-x: auto;
+            margin: 15px 0;
+        }
+        .code-comment {
+            color: #7f8c8d;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #3498db;
+            text-decoration: none;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>安全增强特性</h1>
+            <p>框架提供的安全机制，保护应用免受常见的Web安全威胁</p>
+        </header>
+
+        <div class="section">
+            <h2>安全响应头</h2>
+            <p>框架自动设置常见的安全响应头，防止XSS、点击劫持、MIME类型嗅探等攻击。本页面已应用了这些安全头。</p>
+            
+            <div class="security-headers">
+                {{range .headers}}
+                <div class="header-item">
+                    <div class="header-name">{{.name}}</div>
+                    <div class="header-description">{{.description}}</div>
+                </div>
+                {{end}}
+            </div>
+
+            <div class="code-block">
+                <div><span class="code-comment">// 在控制器中设置安全头</span></div>
+                <div>func handleRequest(c *gin.Context) {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 设置所有常用的安全头</span></div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;c.SetSecureHeaders()</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 或者单独设置特定的安全头</span></div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;c.SetCSP("default-src 'self'; script-src 'self' https://trusted.cdn.com;")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;c.SetXFrameOptions("DENY")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;c.SetXSSProtection()</div>
+                <div>}</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>缓存控制</h2>
+            <p>框架提供了便捷的缓存控制方法，用于管理敏感页面的缓存策略，防止信息泄露。本页面已设置为禁止缓存。</p>
+            
+            <div class="code-block">
+                <div><span class="code-comment">// 禁止缓存</span></div>
+                <div>c.NoCache() <span class="code-comment">// 设置禁止缓存的响应头</span></div>
+                <div></div>
+                <div><span class="code-comment">// 设置缓存时间</span></div>
+                <div>c.Cache(300) <span class="code-comment">// 设置缓存5分钟</span></div>
+            </div>
+            
+            <div class="feature-list">
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">适用于敏感页面</div>
+                        <div class="feature-description">用户资料、账户信息等敏感页面应禁止缓存，防止信息泄露。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">公共资源缓存</div>
+                        <div class="feature-description">公共资源如图片、CSS、JS等可设置较长的缓存时间，提高性能。</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>JWT安全实践</h2>
+            <p>框架的JWT实现采用了多种安全措施，保护用户会话和身份认证。</p>
+            
+            <div class="feature-list">
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">安全存储</div>
+                        <div class="feature-description">JWT令牌存储在HttpOnly Cookie中，防止XSS攻击获取令牌。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">令牌过期机制</div>
+                        <div class="feature-description">令牌设置合理的过期时间，减少被盗用的风险。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">签名验证</div>
+                        <div class="feature-description">使用HMAC-SHA256算法验证令牌，防止篡改。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">刷新机制</div>
+                        <div class="feature-description">提供令牌刷新机制，减少重复登录的需求。</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>HTTPS支持</h2>
+            <p>框架提供了检测HTTPS的方法，并支持自动重定向到HTTPS。</p>
+            
+            <div class="code-block">
+                <div><span class="code-comment">// 检测是否为HTTPS请求</span></div>
+                <div>if c.IsSsl() {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// HTTPS请求处理</span></div>
+                <div>} else {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 可以重定向到HTTPS</span></div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;c.Redirect("https://" + c.Host() + c.RequestURI)</div>
+                <div>}</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>其他安全特性</h2>
+            <div class="feature-list">
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">参数验证</div>
+                        <div class="feature-description">提供强大的数据验证功能，防止不合法数据进入系统。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">CSRF防护</div>
+                        <div class="feature-description">与Gin中间件集成，提供CSRF令牌验证。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">日志记录</div>
+                        <div class="feature-description">提供详细的请求日志，便于安全审计和问题排查。</div>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">✓</div>
+                    <div class="feature-content">
+                        <div class="feature-title">文件上传安全</div>
+                        <div class="feature-description">支持文件类型验证、大小限制等，防止恶意文件上传。</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部导航 -->
+        <div class="footer-nav">
+            <a href="/" class="nav-link">首页</a>
+            <a href="/docs" class="nav-link">API文档</a>
+            <a href="/i18n" class="nav-link">国际化支持</a>
+            <a href="/utils/url-builder" class="nav-link">URL构建</a>
+            <a href="/utils/info" class="nav-link">请求信息</a>
+            <a href="/form" class="nav-link">表单验证</a>
+            <a href="/sse" class="nav-link">SSE演示</a>
+        </div>
+    </div>
+</body>
+</html> 

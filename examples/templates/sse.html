@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>服务器发送事件(SSE)演示</title>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f7f9fc;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #e74c3c;
+            margin-right: 8px;
+        }
+        .status-indicator.connected {
+            background-color: #2ecc71;
+        }
+        .panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 768px) {
+            .panel {
+                grid-template-columns: 1fr;
+            }
+        }
+        .card {
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .card-title {
+            color: #2980b9;
+            margin-top: 0;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        input, textarea, select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        textarea {
+            height: 100px;
+            resize: vertical;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button.secondary {
+            background-color: #7f8c8d;
+        }
+        button.secondary:hover {
+            background-color: #6a7878;
+        }
+        .events-container {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 10px;
+            background-color: #f9f9f9;
+        }
+        .event {
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: white;
+            border-left: 3px solid #3498db;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        .event.user-created {
+            border-left-color: #2ecc71;
+        }
+        .event.user-updated {
+            border-left-color: #f39c12;
+        }
+        .event.system-notice {
+            border-left-color: #9b59b6;
+        }
+        .event.ping {
+            border-left-color: #95a5a6;
+        }
+        .event-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 14px;
+            color: #7f8c8d;
+        }
+        .event-type {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .event-content {
+            font-size: 16px;
+        }
+        .checkbox-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+        }
+        .checkbox-item input {
+            width: auto;
+            margin-right: 5px;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #3498db;
+            text-decoration: none;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        /* 新增样式 */
+        .clients-container {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 15px;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 5px;
+        }
+        .client-item {
+            padding: 8px 12px;
+            margin-bottom: 5px;
+            background-color: #f5f5f5;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .client-item:hover {
+            background-color: #e0e0e0;
+        }
+        .client-item.selected {
+            background-color: #d4edda;
+            border-left: 3px solid #28a745;
+        }
+        .client-item.current {
+            font-weight: bold;
+        }
+        .hub-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .selected-client-info {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            display: none;
+        }
+        .selected-client-info.show {
+            display: block;
+        }
+        .footer-nav {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .nav-link {
+            color: #3498db;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+        .nav-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>服务器发送事件(SSE)演示</h1>
+            <p>实时消息推送，支持事件过滤、心跳检测和历史记录</p>
+        </header>
+
+        <div class="status">
+            <div id="statusIndicator" class="status-indicator"></div>
+            <span id="statusText">未连接</span>
+        </div>
+
+        <div class="hub-controls">
+            <button id="refreshBtn">刷新客户端列表</button>
+            <button id="closeHubBtn">关闭SSE服务</button>
+            <button id="restartHubBtn">重启SSE服务</button>
+        </div>
+
+        <div class="panel">
+            <div>
+                <div class="card">
+                    <h3 class="card-title">事件接收器</h3>
+                    <div class="form-group">
+                        <label>事件过滤</label>
+                        <div class="checkbox-group">
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="userCreated" checked>
+                                <label for="userCreated">用户创建 (user.created)</label>
+                            </div>
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="userUpdated" checked>
+                                <label for="userUpdated">用户更新 (user.updated)</label>
+                            </div>
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="systemNotice" checked>
+                                <label for="systemNotice">系统通知 (system.notice)</label>
+                            </div>
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="ping" checked>
+                                <label for="ping">心跳 (ping)</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <button id="connectBtn">连接</button>
+                        <button id="disconnectBtn" class="secondary" disabled>断开连接</button>
+                        <button id="clearBtn" class="secondary">清空事件</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">在线客户端</h3>
+                    <div class="clients-container" id="clientsList"></div>
+                    <div class="selected-client-info" id="selectedClientInfo">
+                        <p>已选择客户端: <span id="selectedClientId"></span></p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">发送消息</h3>
+                    <div class="form-group">
+                        <label for="eventType">事件类型</label>
+                        <select id="eventType">
+                            <option value="user.created">用户创建 (user.created)</option>
+                            <option value="user.updated">用户更新 (user.updated)</option>
+                            <option value="system.notice">系统通知 (system.notice)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="messageContent">消息内容</label>
+                        <textarea id="messageContent" placeholder="输入要发送的消息"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="clientID">目标客户端ID (留空则广播)</label>
+                        <input type="text" id="clientID" placeholder="可选，指定客户端ID"/>
+                    </div>
+                    <div class="form-group">
+                        <button id="sendBtn">发送消息</button>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <div class="card">
+                    <h3 class="card-title">接收到的事件</h3>
+                    <div id="events" class="events-container"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 底部导航 -->
+    <div class="footer-nav">
+        <a href="/" class="nav-link">首页</a>
+        <a href="/docs" class="nav-link">API文档</a>
+        <a href="/i18n" class="nav-link">国际化支持</a>
+        <a href="/utils/url-builder" class="nav-link">URL构建</a>
+        <a href="/utils/info" class="nav-link">请求信息</a>
+        <a href="/form" class="nav-link">表单验证</a>
+        <a href="/security" class="nav-link">安全增强</a>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let evtSource = null;
+            const clientId = 'client_' + Date.now();
+            const statusIndicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            const eventsContainer = document.getElementById('events');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const sendBtn = document.getElementById('sendBtn');
+            const refreshBtn = document.getElementById('refreshBtn');
+            const closeHubBtn = document.getElementById('closeHubBtn');
+            const restartHubBtn = document.getElementById('restartHubBtn');
+            const clientsList = document.getElementById('clientsList');
+            const selectedClientInfo = document.getElementById('selectedClientInfo');
+            const selectedClientId = document.getElementById('selectedClientId');
+            const clientIDInput = document.getElementById('clientID');
+
+            let selectedClient = null;
+
+            // 连接到SSE
+            connectBtn.addEventListener('click', function() {
+                connectSSE();
+            });
+
+            // 断开SSE连接
+            disconnectBtn.addEventListener('click', function() {
+                disconnectSSE();
+            });
+
+            // 清空事件
+            clearBtn.addEventListener('click', function() {
+                eventsContainer.innerHTML = '';
+            });
+
+            // 刷新客户端列表
+            refreshBtn.addEventListener('click', function() {
+                refreshClients();
+            });
+
+            // 关闭Hub
+            closeHubBtn.addEventListener('click', function() {
+                closeHub();
+            });
+
+            // 重启Hub
+            restartHubBtn.addEventListener('click', function() {
+                restartHub();
+            });
+
+            // 发送消息
+            sendBtn.addEventListener('click', function() {
+                const eventType = document.getElementById('eventType').value;
+                const message = document.getElementById('messageContent').value;
+                const targetClientId = document.getElementById('clientID').value || selectedClient;
+
+                if (!message) {
+                    alert('请输入消息内容');
+                    return;
+                }
+
+                // 判断是广播还是定向发送
+                let endpoint = targetClientId 
+                    ? `/send/${targetClientId}` 
+                    : '/broadcast';
+                
+                // 尝试使用新API路径
+                let newEndpoint = targetClientId 
+                    ? `/sse-api/send/${targetClientId}` 
+                    : '/sse-api/broadcast';
+                
+                const payload = targetClientId 
+                    ? { message } 
+                    : { event: eventType, message };
+
+                // 尝试先用新路径，如果失败再用旧路径
+                fetch(newEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                })
+                .then(response => {
+                    if (!response.ok && response.status === 404) {
+                        // 如果新路径返回404，尝试旧路径
+                        return fetch(endpoint, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(payload)
+                        });
+                    }
+                    return response;
+                })
+                .then(response => response.json())
+                .then(data => {
+                    addEvent({
+                        event: 'system.notice',
+                        data: JSON.stringify({ message: '消息发送成功', response: data }),
+                        id: Date.now()
+                    });
+                })
+                .catch(error => {
+                    addEvent({
+                        event: 'system.notice',
+                        data: JSON.stringify({ message: '消息发送失败', error: error.toString() }),
+                        id: Date.now()
+                    });
+                });
+            });
+
+            function connectSSE() {
+                if (evtSource) {
+                    evtSource.close();
+                }
+
+                // 收集选中的事件类型
+                const eventTypes = [];
+                if (document.getElementById('userCreated').checked) eventTypes.push('user.created');
+                if (document.getElementById('userUpdated').checked) eventTypes.push('user.updated');
+                if (document.getElementById('systemNotice').checked) eventTypes.push('system.notice');
+                if (document.getElementById('ping').checked) eventTypes.push('ping');
+
+                if (eventTypes.length === 0) {
+                    alert('请至少选择一种事件类型');
+                    return;
+                }
+
+                // 尝试新的SSE URL
+                let sseUrl = `/sse-api/events?client_id=${clientId}&filter=${eventTypes.join(',')}`;
+                
+                // 创建EventSource连接
+                evtSource = new EventSource(sseUrl);
+                
+                // 当连接出错时(通常是404)，尝试旧的URL
+                evtSource.onerror = function(e) {
+                    if (evtSource) {
+                        evtSource.close();
+                        
+                        // 尝试旧的URL
+                        sseUrl = `/events?client_id=${clientId}&filter=${eventTypes.join(',')}`;
+                        evtSource = new EventSource(sseUrl);
+                        
+                        // 设置正常的事件处理
+                        setupEventHandlers(evtSource);
+                    }
+                };
+                
+                // 设置正常的事件处理
+                setupEventHandlers(evtSource);
+            }
+            
+            function setupEventHandlers(es) {
+                // 连接打开
+                es.onopen = function() {
+                    statusIndicator.classList.add('connected');
+                    statusText.textContent = '已连接';
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    
+                    addEvent({
+                        event: 'system.notice',
+                        data: JSON.stringify({
+                            message: 'SSE连接已建立',
+                            clientId: clientId,
+                            time: new Date().toLocaleString()
+                        }),
+                        id: Date.now()
+                    });
+                    
+                    // 连接成功后立即刷新客户端列表
+                    refreshClients();
+                };
+
+                // 监听事件
+                es.addEventListener('user.created', handleEvent);
+                es.addEventListener('user.updated', handleEvent);
+                es.addEventListener('system.notice', handleEvent);
+                es.addEventListener('ping', handleEvent);
+
+                // 错误处理
+                es.onerror = function(e) {
+                    statusIndicator.classList.remove('connected');
+                    statusText.textContent = '连接错误或关闭';
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    
+                    addEvent({
+                        event: 'system.notice',
+                        data: JSON.stringify({
+                            message: 'SSE连接错误或关闭',
+                            time: new Date().toLocaleString()
+                        }),
+                        id: Date.now()
+                    });
+                    
+                    es.close();
+                    evtSource = null;
+                    
+                    // 检查Hub状态，如果关闭则不重连
+                    checkHubStatus().then(running => {
+                        if (!running) {
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: 'SSE服务已关闭，请重启服务',
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                        }
+                    });
+                };
+            }
+
+            function disconnectSSE() {
+                if (evtSource) {
+                    evtSource.close();
+                    evtSource = null;
+                    
+                    statusIndicator.classList.remove('connected');
+                    statusText.textContent = '已断开连接';
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    
+                    addEvent({
+                        event: 'system.notice',
+                        data: JSON.stringify({
+                            message: 'SSE连接已手动断开',
+                            time: new Date().toLocaleString()
+                        }),
+                        id: Date.now()
+                    });
+                }
+            }
+
+            function handleEvent(e) {
+                addEvent(e);
+            }
+
+            function addEvent(e) {
+                const event = document.createElement('div');
+                event.className = `event ${e.event.replace('.', '-')}`;
+                
+                let data;
+                try {
+                    data = JSON.parse(e.data);
+                } catch (error) {
+                    data = { message: e.data };
+                }
+                
+                const time = data.time || new Date().toLocaleString();
+                
+                event.innerHTML = `
+                    <div class="event-header">
+                        <span class="event-type">${e.event}</span>
+                        <span class="event-time">${time}</span>
+                    </div>
+                    <div class="event-content">${data.message || JSON.stringify(data)}</div>
+                `;
+                
+                eventsContainer.prepend(event);
+                
+                // 限制最大显示条数
+                if (eventsContainer.children.length > 100) {
+                    eventsContainer.removeChild(eventsContainer.lastChild);
+                }
+            }
+            
+            // 新增函数 - 刷新客户端列表
+            function refreshClients() {
+                // 尝试先请求新API路径，如果失败则回退到旧路径
+                fetchWithFallback('/sse-api/clients', '/clients')
+                    .then(data => {
+                        if (data.code === 0 && data.data && data.data.clients) {
+                            clientsList.innerHTML = '';
+                            
+                            data.data.clients.forEach(cid => {
+                                const clientDiv = document.createElement('div');
+                                clientDiv.className = 'client-item';
+                                if (cid === selectedClient) {
+                                    clientDiv.className += ' selected';
+                                }
+                                if (cid === clientId) {
+                                    clientDiv.className += ' current';
+                                    clientDiv.textContent = `${cid} (当前客户端)`;
+                                } else {
+                                    clientDiv.textContent = cid;
+                                }
+                                
+                                clientDiv.addEventListener('click', function() {
+                                    selectClient(cid);
+                                });
+                                
+                                clientsList.appendChild(clientDiv);
+                            });
+                            
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: `客户端列表已刷新，共${data.data.clients.length}个客户端`,
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                        } else {
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: '获取客户端列表失败',
+                                    error: data.msg || '未知错误',
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                        }
+                    })
+                    .catch(error => {
+                        addEvent({
+                            event: 'system.notice',
+                            data: JSON.stringify({
+                                message: '获取客户端列表失败',
+                                error: error.toString(),
+                                time: new Date().toLocaleString()
+                            }),
+                            id: Date.now()
+                        });
+                    });
+            }
+            
+            // 尝试先请求新API路径，如果失败则回退到旧路径
+            function fetchWithFallback(newPath, oldPath) {
+                return fetch(newPath)
+                    .then(response => {
+                        if (!response.ok && response.status === 404) {
+                            // 如果新路径返回404，尝试旧路径
+                            return fetch(oldPath);
+                        }
+                        return response;
+                    })
+                    .then(response => response.json());
+            }
+            
+            // 新增函数 - 选择客户端
+            function selectClient(cid) {
+                // 更新选中状态
+                document.querySelectorAll('.client-item').forEach(item => {
+                    item.classList.remove('selected');
+                    if (item.textContent.includes(cid)) {
+                        item.classList.add('selected');
+                    }
+                });
+                
+                selectedClient = cid;
+                selectedClientId.textContent = cid;
+                selectedClientInfo.classList.add('show');
+                clientIDInput.value = cid;
+                
+                addEvent({
+                    event: 'system.notice',
+                    data: JSON.stringify({
+                        message: `已选择客户端: ${cid}`,
+                        time: new Date().toLocaleString()
+                    }),
+                    id: Date.now()
+                });
+            }
+            
+            // 新增函数 - 关闭Hub
+            function closeHub() {
+                fetchWithFallback('/sse-api/close', '/close')
+                    .then(data => {
+                        if (data.code === 0) {
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: 'SSE服务已关闭',
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                            
+                            // 自动断开连接
+                            if (evtSource) {
+                                disconnectSSE();
+                            }
+                        } else {
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: '关闭SSE服务失败',
+                                    error: data.msg || '未知错误',
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                        }
+                    })
+                    .catch(error => {
+                        addEvent({
+                            event: 'system.notice',
+                            data: JSON.stringify({
+                                message: '关闭SSE服务失败',
+                                error: error.toString(),
+                                time: new Date().toLocaleString()
+                            }),
+                            id: Date.now()
+                        });
+                    });
+            }
+            
+            // 新增函数 - 重启Hub
+            function restartHub() {
+                fetchWithFallback('/sse-api/restart', '/restart')
+                    .then(data => {
+                        if (data.code === 0) {
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: 'SSE服务已重启',
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                            
+                            // 自动重新连接
+                            setTimeout(() => {
+                                if (!evtSource) {
+                                    connectSSE();
+                                }
+                            }, 1000);
+                        } else {
+                            addEvent({
+                                event: 'system.notice',
+                                data: JSON.stringify({
+                                    message: '重启SSE服务失败',
+                                    error: data.msg || '未知错误',
+                                    time: new Date().toLocaleString()
+                                }),
+                                id: Date.now()
+                            });
+                        }
+                    })
+                    .catch(error => {
+                        addEvent({
+                            event: 'system.notice',
+                            data: JSON.stringify({
+                                message: '重启SSE服务失败',
+                                error: error.toString(),
+                                time: new Date().toLocaleString()
+                            }),
+                            id: Date.now()
+                        });
+                    });
+            }
+            
+            // 新增函数 - 检查Hub状态
+            function checkHubStatus() {
+                return fetchWithFallback('/sse-api/status', '/status')
+                    .then(data => {
+                        if (data.code === 0 && data.data) {
+                            return data.data.running;
+                        }
+                        return false;
+                    })
+                    .catch(() => false);
+            }
+            
+            // 自动连接
+            setTimeout(() => {
+                connectSSE();
+            }, 500);
+            
+            // 定时刷新客户端列表 (每10秒)
+            setInterval(() => {
+                if (evtSource) {
+                    refreshClients();
+                }
+            }, 10000);
+        });
+    </script>
+</body>
+</html> 

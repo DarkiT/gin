@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f7f9fc;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .toc {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 30px;
+        }
+        .toc-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+        .toc-list {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .toc-list li {
+            margin-bottom: 8px;
+        }
+        .toc-list a {
+            color: #3498db;
+            text-decoration: none;
+        }
+        .toc-list a:hover {
+            text-decoration: underline;
+        }
+        .module {
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .module:last-child {
+            border-bottom: none;
+        }
+        .module-title {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            padding-left: 15px;
+            border-left: 4px solid #3498db;
+        }
+        .description {
+            margin-bottom: 20px;
+            color: #555;
+        }
+        .api-list {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .api-item {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .api-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        .api-name {
+            font-weight: bold;
+            color: #2980b9;
+            margin-bottom: 5px;
+            font-family: monospace;
+            font-size: 16px;
+        }
+        .api-signature {
+            font-family: monospace;
+            background-color: #e9ecef;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            overflow-x: auto;
+        }
+        .api-description {
+            margin-bottom: 10px;
+            color: #555;
+        }
+        .api-params {
+            margin-top: 10px;
+        }
+        .param-title {
+            font-weight: 500;
+            margin-bottom: 5px;
+            color: #2c3e50;
+        }
+        .param-list {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .param-item {
+            margin-bottom: 5px;
+            display: flex;
+        }
+        .param-name {
+            font-family: monospace;
+            color: #e74c3c;
+            width: 120px;
+        }
+        .param-type {
+            font-family: monospace;
+            color: #3498db;
+            width: 100px;
+        }
+        .param-desc {
+            flex: 1;
+        }
+        .example-title {
+            font-weight: 500;
+            margin: 15px 0 5px 0;
+            color: #2c3e50;
+        }
+        .code {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            overflow-x: auto;
+            margin-bottom: 10px;
+        }
+        .code-comment {
+            color: #7f8c8d;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #3498db;
+            text-decoration: none;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        .footer-nav {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .nav-link {
+            color: #3498db;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+        .nav-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>API文档</h1>
+            <p>框架API参考文档，包含各模块的功能说明和使用方法</p>
+        </header>
+
+        <div class="toc">
+            <div class="toc-title">目录</div>
+            <ul class="toc-list">
+                <li><a href="#request">请求信息</a></li>
+                <li><a href="#response">响应处理</a></li>
+                <li><a href="#i18n">国际化</a></li>
+                <li><a href="#url">URL构建</a></li>
+                <li><a href="#security">安全功能</a></li>
+                <li><a href="#cache">缓存系统</a></li>
+                <li><a href="#sse">服务器发送事件</a></li>
+                <li><a href="#validation">表单验证</a></li>
+            </ul>
+        </div>
+
+        <div id="request" class="module">
+            <h2 class="module-title">请求信息</h2>
+            <div class="description">
+                提供丰富的请求信息获取方法，可以轻松获取HTTP请求的各种详细信息。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">Method()</div>
+                    <div class="api-signature">func (c *Context) Method() string</div>
+                    <div class="api-description">获取当前HTTP请求的方法（如GET、POST、PUT等）</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>method := c.Method()</div>
+                        <div><span class="code-comment">// 输出：GET</span></div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">Path()</div>
+                    <div class="api-signature">func (c *Context) Path() string</div>
+                    <div class="api-description">获取当前HTTP请求的路径</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>path := c.Path()</div>
+                        <div><span class="code-comment">// 输出：/users/profile</span></div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">FullUrl()</div>
+                    <div class="api-signature">func (c *Context) FullUrl() string</div>
+                    <div class="api-description">获取当前HTTP请求的完整URL，包括协议、域名、路径和查询参数</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>url := c.FullUrl()</div>
+                        <div><span class="code-comment">// 输出：https://example.com/users?id=123</span></div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="response" class="module">
+            <h2 class="module-title">响应处理</h2>
+            <div class="description">
+                提供多种响应格式的输出方法，包括HTML、JSON、XML等，以及各种HTTP状态码的快捷设置方法。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">HTML()</div>
+                    <div class="api-signature">func (c *Context) HTML(code int, name string, data interface{})</div>
+                    <div class="api-description">返回HTML模板渲染结果</div>
+                    <div class="api-params">
+                        <div class="param-title">参数：</div>
+                        <ul class="param-list">
+                            <li class="param-item">
+                                <div class="param-name">code</div>
+                                <div class="param-type">int</div>
+                                <div class="param-desc">HTTP状态码</div>
+                            </li>
+                            <li class="param-item">
+                                <div class="param-name">name</div>
+                                <div class="param-type">string</div>
+                                <div class="param-desc">模板名称</div>
+                            </li>
+                            <li class="param-item">
+                                <div class="param-name">data</div>
+                                <div class="param-type">interface{}</div>
+                                <div class="param-desc">传递给模板的数据</div>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>c.HTML(http.StatusOK, "index.html", gin.H{</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"title": "首页",</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"user": user,</div>
+                        <div>})</div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">JSON()</div>
+                    <div class="api-signature">func (c *Context) JSON(code int, obj interface{})</div>
+                    <div class="api-description">返回JSON格式响应</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>c.JSON(http.StatusOK, gin.H{</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"code": 0,</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"msg": "操作成功",</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"data": result,</div>
+                        <div>})</div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="i18n" class="module">
+            <h2 class="module-title">国际化</h2>
+            <div class="description">
+                提供多语言支持功能，可以根据用户的语言设置自动返回对应语言的文本内容。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">I18n()</div>
+                    <div class="api-signature">func (c *Context) I18n(lang, key string) string</div>
+                    <div class="api-description">获取指定语言的翻译内容</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>greeting := c.I18n("zh-CN", "greeting")</div>
+                        <div><span class="code-comment">// 输出：你好，世界</span></div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">I18nf()</div>
+                    <div class="api-signature">func (c *Context) I18nf(lang, key string, args ...interface{}) string</div>
+                    <div class="api-description">获取带格式化参数的翻译内容</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>message := c.I18nf("zh-CN", "hello_name", "张三")</div>
+                        <div><span class="code-comment">// 输出：你好，张三</span></div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">PreferredLanguage()</div>
+                    <div class="api-signature">func (c *Context) PreferredLanguage(defaultLang string, availableLangs []string) string</div>
+                    <div class="api-description">获取用户首选语言，如果用户的语言不在可用语言列表中，则返回默认语言</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>lang := c.PreferredLanguage("zh-CN", []string{"en-US", "zh-CN", "ja-JP"})</div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="url" class="module">
+            <h2 class="module-title">URL构建</h2>
+            <div class="description">
+                提供链式调用API构建复杂URL，支持查询参数和域名设置。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">NewURL()</div>
+                    <div class="api-signature">func (c *Context) NewURL(path string) *URLBuilder</div>
+                    <div class="api-description">创建一个新的URLBuilder实例</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>url := c.NewURL("/api/users")</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;.Set("id", "123")</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;.Set("page", "1")</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;.Build()</div>
+                        <div><span class="code-comment">// 输出：/api/users?id=123&page=1</span></div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="security" class="module">
+            <h2 class="module-title">安全功能</h2>
+            <div class="description">
+                提供多种安全增强功能，包括CSP策略设置、XSS防护、CSRF防护等。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">SetSecureHeaders()</div>
+                    <div class="api-signature">func (c *Context) SetSecureHeaders()</div>
+                    <div class="api-description">设置所有常用的安全响应头</div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">SetCSP()</div>
+                    <div class="api-signature">func (c *Context) SetCSP(policy string)</div>
+                    <div class="api-description">设置内容安全策略(CSP)头</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>c.SetCSP("default-src 'self'; script-src 'self' https://trusted.cdn.com;")</div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">NoCache()</div>
+                    <div class="api-signature">func (c *Context) NoCache()</div>
+                    <div class="api-description">设置禁止缓存的响应头，适用于敏感页面</div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="cache" class="module">
+            <h2 class="module-title">缓存系统</h2>
+            <div class="description">
+                提供高性能的内存缓存功能，支持TTL过期、持久化和列表操作。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">CacheSet()</div>
+                    <div class="api-signature">func (c *Context) CacheSet(key string, value interface{}, expiration time.Duration) error</div>
+                    <div class="api-description">设置缓存，支持过期时间设置</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>c.CacheSet("user:123", userData, 10*time.Minute)</div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">CacheGet()</div>
+                    <div class="api-signature">func (c *Context) CacheGet(key string) (interface{}, bool)</div>
+                    <div class="api-description">获取缓存，返回值和是否存在的标志</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>userData, exists := c.CacheGet("user:123")</div>
+                        <div>if exists {</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 使用缓存数据</span></div>
+                        <div>}</div>
+                    </div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">CacheDel()</div>
+                    <div class="api-signature">func (c *Context) CacheDel(key string) error</div>
+                    <div class="api-description">删除指定的缓存项</div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="sse" class="module">
+            <h2 class="module-title">服务器发送事件(SSE)</h2>
+            <div class="description">
+                提供服务器发送事件(SSE)功能，支持实时消息推送、事件过滤和心跳检测。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">SSE()</div>
+                    <div class="api-signature">func (c *Context) SSE()</div>
+                    <div class="api-description">启动SSE连接，设置适当的响应头</div>
+                </li>
+                
+                <li class="api-item">
+                    <div class="api-name">SSESend()</div>
+                    <div class="api-signature">func (c *Context) SSESend(event string, data interface{})</div>
+                    <div class="api-description">发送SSE事件</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>c.SSESend("user.created", gin.H{</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"id": 123,</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"name": "张三",</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;"time": time.Now(),</div>
+                        <div>})</div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <div id="validation" class="module">
+            <h2 class="module-title">表单验证</h2>
+            <div class="description">
+                提供强大的数据验证功能，支持自定义验证规则和错误信息。
+            </div>
+            
+            <ul class="api-list">
+                <li class="api-item">
+                    <div class="api-name">Validate()</div>
+                    <div class="api-signature">func (c *Context) Validate(obj interface{}) error</div>
+                    <div class="api-description">验证结构体，使用结构体标签定义验证规则</div>
+                    <div class="example-title">示例：</div>
+                    <div class="code">
+                        <div>type UserForm struct {</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;Username string `json:"username" validate:"required,min=3"`</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;Email    string `json:"email" validate:"required,email"`</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;Age      int    `json:"age" validate:"required,gte=18"`</div>
+                        <div>}</div>
+                        <div></div>
+                        <div>var form UserForm</div>
+                        <div>if err := c.ShouldBindJSON(&form); err != nil {</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;return</div>
+                        <div>}</div>
+                        <div></div>
+                        <div>if err := c.Validate(form); err != nil {</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})</div>
+                        <div>&nbsp;&nbsp;&nbsp;&nbsp;return</div>
+                        <div>}</div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <!-- 底部导航 -->
+        <div class="footer-nav">
+            <a href="/" class="nav-link">首页</a>
+            <a href="/i18n" class="nav-link">国际化支持</a>
+            <a href="/utils/url-builder" class="nav-link">URL构建</a>
+            <a href="/utils/info" class="nav-link">请求信息</a>
+            <a href="/form" class="nav-link">表单验证</a>
+            <a href="/security" class="nav-link">安全增强</a>
+            <a href="/sse" class="nav-link">SSE演示</a>
+        </div>
+    </div>
+</body>
+</html>

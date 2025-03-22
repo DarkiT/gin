@@ -94,18 +94,26 @@ func (hw *HandlerWrapper) GetHandler(action string) (HandlerFunc, bool) {
 
 	// 创建包含中间件的新处理函数
 	wrappedHandler := func(c *Context) {
-		// 按顺序应用中间件
-		for _, m := range hw.Middlewares {
-			if c.IsAborted() {
-				return
+		// 创建中间件链
+		next := handler
+
+		// 从后向前包装，这样执行时会从前向后执行
+		for i := len(hw.Middlewares) - 1; i >= 0; i-- {
+			currentMiddleware := hw.Middlewares[i]
+			nextHandler := next
+
+			next = func(ctx *Context) {
+				if !ctx.IsAborted() {
+					currentMiddleware(ctx)
+				}
+				if !ctx.IsAborted() {
+					nextHandler(ctx)
+				}
 			}
-			m(c)
 		}
 
-		// 如果中间件没有中止处理，执行原始处理函数
-		if !c.IsAborted() {
-			handler(c)
-		}
+		// 执行整个链条
+		next(c)
 	}
 
 	// 缓存包装后的处理函数

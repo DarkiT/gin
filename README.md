@@ -23,6 +23,7 @@ Gin是一个高性能的Web框架，本项目在保持 Gin 高性能特性的同
 - 安全性增强
 - 国际化支持
 - 会话管理工具
+- 缓存系统（内存缓存、列表缓存、持久化）
 
 ## 安装
 
@@ -480,10 +481,16 @@ evtSource.onerror = function(e) {
 ### URL 构建
 
 ```go
-url := c.BuildUrl("/api/users", gin.H{
-    "page": 1,
-    "size": 10,
-}).Domain("api.example.com").Scheme("https").Builder()
+// 创建URL构建器并链式调用相关方法
+url := c.BuildUrl("/api/users").
+       Set("page", 1).
+       Set("size", 10).
+       Domain("api.example.com").
+       Scheme("https").
+       Builder()
+
+// 注意: 从2.0版本开始，URL构建器的方法已更改为私有方法
+// 但仍然保持链式调用的便捷特性
 ```
 
 ### 请求信息获取
@@ -529,6 +536,181 @@ r.Resource("/users", &UserResource{})
 // 带中间件的资源路由
 api := r.Group("/api", AuthMiddleware)
 api.Resource("/users", &UserResource{})
+```
+
+### 缓存系统
+
+```go
+func main() {
+    r := gin.Default()
+    
+    // 初始化全局缓存
+    // 参数: 默认过期时间, 清理间隔
+    cache := gin.SetGlobalCache(10*time.Minute, 30*time.Second)
+    
+    // 带持久化的缓存
+    // gin.SetGlobalCacheWithPersistence(10*time.Minute, 30*time.Second, "./cache.dat", 5*time.Minute)
+    
+    r.GET("/cache/set", func(c *gin.Context) {
+        // 设置缓存，可选过期时间（不传则使用默认过期时间）
+        c.CacheSet("user:123", gin.H{"name": "张三", "age": 30}, 5*time.Minute)
+        
+        // 设置不同类型的缓存数据
+        c.CacheSet("counter", 1)
+        c.CacheSet("enabled", true)
+        c.CacheSet("score", 95.5)
+        
+        c.Success("缓存已设置")
+    })
+    
+    r.GET("/cache/get", func(c *gin.Context) {
+        // 获取基本缓存
+        value, exists := c.CacheGet("user:123")
+        if !exists {
+            c.Fail("缓存不存在")
+            return
+        }
+        
+        // 获取特定类型的缓存
+        count, _ := c.CacheGetInt("counter")
+        enabled, _ := c.CacheGetBool("enabled")
+        score, _ := c.CacheGetFloat64("score")
+        name, _ := c.CacheGetString("user:name")
+        
+        c.Success(gin.H{
+            "user": value,
+            "count": count,
+            "enabled": enabled,
+            "score": score,
+            "name": name,
+        })
+    })
+    
+    r.GET("/cache/delete", func(c *gin.Context) {
+        c.CacheDelete("user:123")
+        c.Success("缓存已删除")
+    })
+    
+    r.GET("/cache/clear", func(c *gin.Context) {
+        c.CacheClear()
+        c.Success("所有缓存已清除")
+    })
+    
+    r.GET("/cache/keys", func(c *gin.Context) {
+        keys := c.CacheKeys()
+        c.Success(gin.H{"keys": keys, "count": len(keys)})
+    })
+    
+    // 列表缓存操作
+    r.GET("/cache/list", func(c *gin.Context) {
+        // 设置列表缓存的过期时间
+        c.CacheSetList("queue", 5*time.Minute)
+        
+        // 添加元素到列表头部
+        c.CacheLPush("queue", "任务1", "任务2", "任务3")
+        
+        // 添加元素到列表尾部
+        c.CacheRPush("queue", "任务4", "任务5")
+        
+        // 获取列表范围
+        tasks := c.CacheLRange("queue", 0, -1)
+        
+        // 从列表头部弹出元素
+        firstTask, _ := c.CacheLPop("queue")
+        
+        // 从列表尾部弹出元素
+        lastTask, _ := c.CacheRPop("queue")
+        
+        // 获取指定位置的元素
+        middleTask, _ := c.CacheLIndex("queue", 1)
+        
+        c.Success(gin.H{
+            "all_tasks": tasks,
+            "first_task": firstTask,
+            "last_task": lastTask,
+            "middle_task": middleTask,
+        })
+    })
+    
+    // 直接使用缓存实例进行高级操作
+    r.GET("/cache/advanced", func(c *gin.Context) {
+        cache := c.GetCache()
+        
+        // 检查TTL（过期时间）
+        ttl, _ := cache.GetTTL("user:123")
+        
+        // 增加计数器
+        cache.Increment("counter", 5)
+        
+        // 获取统计信息
+        stats := cache.GetStats()
+        
+        // 交易操作
+        tx := cache.BeginTransaction()
+        tx.Set("tx_key", "事务值", 5*time.Minute)
+        tx.LPush("tx_list", "事务列表值")
+        tx.Commit()
+        
+        c.Success(gin.H{
+            "ttl": ttl.Seconds(),
+            "stats": stats,
+        })
+    })
+    
+    // 持久化操作
+    r.GET("/cache/persist", func(c *gin.Context) {
+        cache := c.GetCache()
+        
+        // 手动保存
+        err := cache.Save()
+        if err != nil {
+            c.Fail("保存失败: " + err.Error())
+            return
+        }
+        
+        // 手动加载
+        err = cache.Load()
+        if err != nil {
+            c.Fail("加载失败: " + err.Error())
+            return
+        }
+        
+        c.Success("持久化操作完成")
+    })
+    
+    r.Run(":8080")
+}
+```
+
+#### 缓存系统特性
+
+- **内存缓存**：高性能的键值对缓存
+- **列表缓存**：支持列表操作，可用于实现队列、栈等数据结构
+- **类型安全**：提供类型特定的获取方法，避免类型转换错误
+- **自动过期**：支持TTL（生存时间）和自动清理过期项
+- **持久化**：可将缓存保存到文件并从文件恢复
+- **自动持久化**：支持定时自动保存到文件
+- **事务支持**：提供事务接口进行原子操作
+- **统计信息**：提供缓存使用统计和性能监控
+- **并发安全**：所有操作都是线程安全的
+- **零依赖**：纯Go实现，无外部依赖
+
+#### 缓存配置选项
+
+```go
+// 创建缓存时的配置选项
+cache := gin.SetGlobalCache(
+    5*time.Minute,  // 默认过期时间
+    30*time.Second, // 清理间隔
+)
+
+// 启用持久化
+cache := gin.SetGlobalCacheWithPersistence(
+    5*time.Minute,   // 默认过期时间
+    30*time.Second,  // 清理间隔
+    "./cache.dat",   // 持久化文件路径
+    5*time.Minute,   // 自动保存间隔
+)
 ```
 
 ## 统一响应格式

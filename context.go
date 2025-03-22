@@ -72,7 +72,8 @@ var (
 
 type Context struct {
 	*gin.Context
-	hub *SSEHub
+	hub   *SSEHub
+	cache *Cache[string, any] // 添加缓存字段
 }
 
 // 定义统一的响应结构
@@ -628,13 +629,12 @@ func (c *Context) PageResponse(list any, totalCount int64, currentPage, pageSize
 }
 
 // BuildUrl 创建一个 urlBuilder 实例
-func (c *Context) BuildUrl(path string, params H) *urlBuilder {
+func (c *Context) BuildUrl(path string) *urlBuilder {
 	return &urlBuilder{
 		scheme: c.Scheme(),
 		domain: "",
 		path:   path,
 		ext:    "",
-		params: params,
 	}
 }
 
@@ -642,6 +642,15 @@ func (c *Context) BuildUrl(path string, params H) *urlBuilder {
 type urlBuilder struct {
 	domain, path, ext, scheme string
 	params                    H
+}
+
+// Set 设置 URL 的Query参数（改为私有方法）
+func (ub *urlBuilder) Set(query string, value any) *urlBuilder {
+	if ub.params == nil {
+		ub.params = H{}
+	}
+	ub.params[query] = value
+	return ub
 }
 
 // Scheme 设置 URL 的访问协议（改为私有方法）
@@ -1163,32 +1172,6 @@ func (c *Context) SetSecureHeaders() {
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 }
 
-// 增加常用响应方法
-
-// HTML 返回HTML响应
-func (c *Context) HTML(html string) {
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.String(http.StatusOK, html)
-}
-
-// XML 返回XML响应
-func (c *Context) XML(data interface{}) {
-	c.Header("Content-Type", "application/xml; charset=utf-8")
-	c.Context.XML(http.StatusOK, data)
-}
-
-// YAML 返回YAML响应
-func (c *Context) YAML(data interface{}) {
-	c.Header("Content-Type", "application/x-yaml; charset=utf-8")
-	c.Context.YAML(http.StatusOK, data)
-}
-
-// ProtoBuf 返回ProtoBuf响应
-func (c *Context) ProtoBuf(data interface{}) {
-	c.Header("Content-Type", "application/x-protobuf")
-	c.Context.ProtoBuf(http.StatusOK, data)
-}
-
 // Download 下载文件
 func (c *Context) Download(filepath, filename string) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
@@ -1461,4 +1444,213 @@ func (c *Context) SetJWT(token string, maxAge int) {
 // ClearJWT 清除JWT令牌
 func (c *Context) ClearJWT() {
 	c.SetCookie(JWTCookieKey, "", -1, "/", c.RootDomain(), c.IsSsl(), true)
+}
+
+// 获取缓存实例
+func (c *Context) GetCache() *Cache[string, any] {
+	return c.cache
+}
+
+// 设置缓存值
+func (c *Context) CacheSet(key string, value any, duration ...time.Duration) {
+	if c.cache != nil {
+		c.cache.Set(key, value, duration...)
+	}
+}
+
+// 从缓存获取值
+func (c *Context) CacheGet(key string) (any, bool) {
+	if c.cache != nil {
+		return c.cache.Get(key)
+	}
+	return nil, false
+}
+
+// 从缓存删除值
+func (c *Context) CacheDelete(key string) {
+	if c.cache != nil {
+		c.cache.Delete(key)
+	}
+}
+
+// 检查缓存中是否存在键
+func (c *Context) CacheHas(key string) bool {
+	if c.cache != nil {
+		return c.cache.Has(key)
+	}
+	return false
+}
+
+// 获取缓存中所有键
+func (c *Context) CacheKeys() []string {
+	if c.cache != nil {
+		return c.cache.Keys()
+	}
+	return []string{}
+}
+
+// 清空缓存
+func (c *Context) CacheClear() {
+	if c.cache != nil {
+		c.cache.Clear()
+	}
+}
+
+// 从缓存获取字符串值
+func (c *Context) CacheGetString(key string) (string, bool) {
+	if c.cache == nil {
+		return "", false
+	}
+
+	val, ok := c.cache.Get(key)
+	if !ok {
+		return "", false
+	}
+
+	// 尝试类型转换
+	if s, ok := val.(string); ok {
+		return s, true
+	}
+
+	return "", false
+}
+
+// 从缓存获取整数值
+func (c *Context) CacheGetInt(key string) (int, bool) {
+	if c.cache == nil {
+		return 0, false
+	}
+
+	val, ok := c.cache.Get(key)
+	if !ok {
+		return 0, false
+	}
+
+	// 尝试类型转换
+	if i, ok := val.(int); ok {
+		return i, true
+	}
+
+	return 0, false
+}
+
+// 从缓存获取布尔值
+func (c *Context) CacheGetBool(key string) (bool, bool) {
+	if c.cache == nil {
+		return false, false
+	}
+
+	val, ok := c.cache.Get(key)
+	if !ok {
+		return false, false
+	}
+
+	// 尝试类型转换
+	if b, ok := val.(bool); ok {
+		return b, true
+	}
+
+	return false, false
+}
+
+// 从缓存获取浮点值
+func (c *Context) CacheGetFloat64(key string) (float64, bool) {
+	if c.cache == nil {
+		return 0, false
+	}
+
+	val, ok := c.cache.Get(key)
+	if !ok {
+		return 0, false
+	}
+
+	// 尝试类型转换
+	if f, ok := val.(float64); ok {
+		return f, true
+	}
+
+	return 0, false
+}
+
+// 设置列表缓存
+func (c *Context) CacheSetList(key string, duration ...time.Duration) {
+	if c.cache != nil {
+		c.cache.SetList(key, duration...)
+	}
+}
+
+// 向列表缓存头部添加元素
+func (c *Context) CacheLPush(key string, values ...any) int {
+	if c.cache != nil {
+		return c.cache.LPush(key, values...)
+	}
+	return 0
+}
+
+// 向列表缓存尾部添加元素
+func (c *Context) CacheRPush(key string, values ...any) int {
+	if c.cache != nil {
+		return c.cache.RPush(key, values...)
+	}
+	return 0
+}
+
+// 从列表缓存头部弹出元素
+func (c *Context) CacheLPop(key string) (any, bool) {
+	if c.cache != nil {
+		return c.cache.LPop(key)
+	}
+	return nil, false
+}
+
+// 从列表缓存尾部弹出元素
+func (c *Context) CacheRPop(key string) (any, bool) {
+	if c.cache != nil {
+		return c.cache.RPop(key)
+	}
+	return nil, false
+}
+
+// 获取列表缓存指定索引的元素
+func (c *Context) CacheLIndex(key string, index int) (any, bool) {
+	if c.cache != nil {
+		return c.cache.LIndex(key, index)
+	}
+	return nil, false
+}
+
+// 获取列表缓存的范围元素
+func (c *Context) CacheLRange(key string, start, stop int) []any {
+	if c.cache != nil {
+		return c.cache.LRange(key, start, stop)
+	}
+	return []any{}
+}
+
+// 删除列表缓存
+func (c *Context) CacheDeleteList(key string) {
+	if c.cache != nil {
+		c.cache.DeleteList(key)
+	}
+}
+
+// 检查列表缓存是否存在
+func (c *Context) CacheHasList(key string) bool {
+	if c.cache != nil {
+		return c.cache.HasList(key)
+	}
+	return false
+}
+
+// 初始化全局缓存
+func SetGlobalCache(defaultExpiration, cleanupInterval time.Duration) *Cache[string, any] {
+	cache := NewCache[string, any](defaultExpiration, cleanupInterval)
+	return cache
+}
+
+// 初始化带持久化的全局缓存
+func SetGlobalCacheWithPersistence(defaultExpiration, cleanupInterval time.Duration, persistPath string, autoPersistInterval time.Duration) *Cache[string, any] {
+	cache := NewCache[string, any](defaultExpiration, cleanupInterval).WithPersistence(persistPath, autoPersistInterval)
+	cache.EnableAutoPersist()
+	return cache
 }

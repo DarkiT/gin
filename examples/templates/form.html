@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f7f9fc;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .form-container {
+            margin-top: 20px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #2c3e50;
+        }
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        .error {
+            color: #e74c3c;
+            font-size: 14px;
+            margin-top: 5px;
+            display: none;
+        }
+        input.invalid {
+            border-color: #e74c3c;
+        }
+        input.invalid + .error {
+            display: block;
+        }
+        .help-text {
+            color: #7f8c8d;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            border-radius: 4px;
+            display: none;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .failure {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .validation-rules {
+            margin: 30px 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .validation-rule {
+            margin-bottom: 10px;
+            padding-left: 10px;
+            border-left: 3px solid #3498db;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #3498db;
+            text-decoration: none;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        .footer-nav {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .nav-link {
+            color: #3498db;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+        .nav-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>表单验证示例</h1>
+            <p>演示框架的数据验证功能，支持自定义验证规则</p>
+        </header>
+
+        <div class="validation-rules">
+            <h3>验证规则</h3>
+            <div class="validation-rule">
+                <strong>用户名：</strong> 长度不少于3个字符
+            </div>
+            <div class="validation-rule">
+                <strong>邮箱：</strong> 必须是有效的邮箱格式
+            </div>
+            <div class="validation-rule">
+                <strong>年龄：</strong> 必须是整数，且大于等于18岁
+            </div>
+        </div>
+
+        <div class="form-container">
+            <form id="validationForm">
+                <div class="form-group">
+                    <label for="username">用户名</label>
+                    <input type="text" id="username" name="username" placeholder="请输入用户名">
+                    <div class="error">用户名长度不能少于3个字符</div>
+                    <div class="help-text">输入您的用户名，至少3个字符</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="email">邮箱</label>
+                    <input type="email" id="email" name="email" placeholder="请输入邮箱">
+                    <div class="error">请输入有效的邮箱地址</div>
+                    <div class="help-text">输入您的邮箱地址，用于接收通知</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="age">年龄</label>
+                    <input type="number" id="age" name="age" placeholder="请输入年龄">
+                    <div class="error">年龄必须大于等于18岁</div>
+                    <div class="help-text">输入您的实际年龄，必须年满18岁</div>
+                </div>
+
+                <button type="submit">提交验证</button>
+            </form>
+        </div>
+
+        <div id="resultSuccess" class="result success">
+            <h3>验证成功</h3>
+            <p>所有数据验证通过！服务器响应：</p>
+            <pre id="successData"></pre>
+        </div>
+
+        <div id="resultFailure" class="result failure">
+            <h3>验证失败</h3>
+            <p>数据验证未通过，错误信息：</p>
+            <pre id="failureData"></pre>
+        </div>
+
+        <!-- 底部导航 -->
+        <div class="footer-nav">
+            <a href="/" class="nav-link">首页</a>
+            <a href="/docs" class="nav-link">API文档</a>
+            <a href="/i18n" class="nav-link">国际化支持</a>
+            <a href="/utils/url-builder" class="nav-link">URL构建</a>
+            <a href="/utils/info" class="nav-link">请求信息</a>
+            <a href="/security" class="nav-link">安全增强</a>
+            <a href="/sse" class="nav-link">SSE演示</a>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('validationForm');
+            const resultSuccess = document.getElementById('resultSuccess');
+            const resultFailure = document.getElementById('resultFailure');
+            const successData = document.getElementById('successData');
+            const failureData = document.getElementById('failureData');
+            
+            // 前端验证
+            function validateForm() {
+                let isValid = true;
+                
+                // 验证用户名
+                const username = document.getElementById('username');
+                if (username.value.length < 3) {
+                    username.classList.add('invalid');
+                    isValid = false;
+                } else {
+                    username.classList.remove('invalid');
+                }
+                
+                // 验证邮箱
+                const email = document.getElementById('email');
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailRegex.test(email.value)) {
+                    email.classList.add('invalid');
+                    isValid = false;
+                } else {
+                    email.classList.remove('invalid');
+                }
+                
+                // 验证年龄
+                const age = document.getElementById('age');
+                if (isNaN(age.value) || parseInt(age.value) < 18) {
+                    age.classList.add('invalid');
+                    isValid = false;
+                } else {
+                    age.classList.remove('invalid');
+                }
+                
+                return isValid;
+            }
+            
+            // 表单提交处理
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // 隐藏之前的结果
+                resultSuccess.style.display = 'none';
+                resultFailure.style.display = 'none';
+                
+                // 前端验证
+                if (!validateForm()) {
+                    resultFailure.style.display = 'block';
+                    failureData.textContent = '前端验证失败，请检查表单字段。';
+                    return;
+                }
+                
+                // 准备数据
+                const formData = {
+                    username: document.getElementById('username').value,
+                    email: document.getElementById('email').value,
+                    age: parseInt(document.getElementById('age').value)
+                };
+                
+                // 发送到服务器进行验证
+                fetch('/form/validate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.code === 0) {
+                        // 验证成功
+                        resultSuccess.style.display = 'block';
+                        successData.textContent = JSON.stringify(data, null, 2);
+                    } else {
+                        // 验证失败
+                        resultFailure.style.display = 'block';
+                        failureData.textContent = data.msg;
+                    }
+                })
+                .catch(error => {
+                    resultFailure.style.display = 'block';
+                    failureData.textContent = '请求错误: ' + error;
+                });
+            });
+            
+            // 输入时自动验证
+            const inputs = form.querySelectorAll('input');
+            inputs.forEach(input => {
+                input.addEventListener('input', function() {
+                    validateForm();
+                });
+            });
+        });
+    </script>
+</body>
+</html> 

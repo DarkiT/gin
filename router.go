@@ -67,19 +67,33 @@ func (r *Router) Register(method, path string, handler HandlerFunc, middleware .
 
 // Group 创建或获取路由组
 func (r *Router) Group(path string, middleware ...HandlerFunc) *RouterGroup {
+	// 检查路径格式
+	if path != "" && path[0] != '/' {
+		path = "/" + path
+	}
+
+	// 检查是否已存在该路由组
+	if group, exists := r.groups[path]; exists {
+		return group
+	}
+
 	// 转换中间件
 	handlers := make([]gin.HandlerFunc, len(middleware))
 	for i, m := range middleware {
 		handlers[i] = wrapHandler(m)
 	}
 
-	// 创建或获取路由组
-	group := r.engine.Group(path, handlers...)
+	// 创建gin路由组
+	ginGroup := r.engine.Group(path, handlers...)
+
+	// 创建我们的路由组
 	rg := &RouterGroup{
-		group:    group,
+		group:    ginGroup,
 		basePath: path,
 		router:   r,
 	}
+
+	// 保存到映射表
 	r.groups[path] = rg
 	return rg
 }
@@ -133,6 +147,7 @@ func (r *Router) ANY(path string, handler HandlerFunc, middleware ...HandlerFunc
 
 // Register 注册路由到当前组
 func (rg *RouterGroup) Register(method, path string, handler HandlerFunc, middleware ...HandlerFunc) {
+	// 正确计算一次完整路径
 	fullPath := rg.calculatePath(path)
 
 	// 收集中间件和处理函数
@@ -148,7 +163,8 @@ func (rg *RouterGroup) Register(method, path string, handler HandlerFunc, middle
 
 	// 注册到 gin
 	if rg.group != nil {
-		rg.group.Handle(method, rg.calculatePath(path), allHandlers...)
+		// 使用path的相对路径，而不是fullPath，因为gin.RouterGroup已经知道自己的basePath
+		rg.group.Handle(method, path, allHandlers...)
 	} else {
 		// 如果没有路由组，则直接注册到路由器
 		rg.router.engine.Handle(method, fullPath, allHandlers...)
@@ -203,18 +219,45 @@ func (rg *RouterGroup) ANY(path string, handler HandlerFunc, middleware ...Handl
 
 // Group 创建子路由组
 func (rg *RouterGroup) Group(path string, middleware ...HandlerFunc) *RouterGroup {
+	// 正确计算子组路径，避免重复斜杠
 	fullPath := rg.calculatePath(path)
-	return rg.router.Group(fullPath, middleware...)
+
+	// 转换中间件
+	handlers := make([]gin.HandlerFunc, len(middleware))
+	for i, m := range middleware {
+		handlers[i] = wrapHandler(m)
+	}
+
+	// 使用正确计算的路径创建gin路由组
+	group := rg.group.Group(path, handlers...)
+
+	// 创建我们自己的路由组，保存完整路径
+	newGroup := &RouterGroup{
+		group:    group,
+		basePath: fullPath,
+		router:   rg.router,
+	}
+
+	// 记录到映射表中
+	rg.router.groups[fullPath] = newGroup
+	return newGroup
 }
 
-// 工具方法
+// 改进路径计算方法，避免重复斜杠
 func (rg *RouterGroup) calculatePath(path string) string {
 	if path == "" {
 		return rg.basePath
 	}
-	if path[0] != '/' {
+
+	// 确保basePath和path之间只有一个斜杠
+	if path[0] == '/' && rg.basePath != "" && rg.basePath[len(rg.basePath)-1] == '/' {
+		// 如果basePath以/结尾且path以/开头，移除path开头的斜杠
+		path = path[1:]
+	} else if path[0] != '/' && rg.basePath != "" && rg.basePath[len(rg.basePath)-1] != '/' {
+		// 如果basePath不以/结尾且path不以/开头，添加斜杠
 		path = "/" + path
 	}
+
 	return rg.basePath + path
 }
 

@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f7f9fc;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+        }
+        .section h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 22px;
+        }
+        .section p {
+            color: #555;
+            margin-bottom: 20px;
+        }
+        .url-builder {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 6px;
+            background-color: white;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #2c3e50;
+        }
+        .form-control {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+        .form-control:focus {
+            border-color: #3498db;
+            outline: none;
+        }
+        .parameter-container {
+            margin-top: 15px;
+        }
+        .parameter-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .parameter-field {
+            flex: 1;
+        }
+        .btn {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        .btn-primary {
+            background-color: #3498db;
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #2980b9;
+        }
+        .btn-secondary {
+            background-color: #7f8c8d;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background-color: #6c7a7d;
+        }
+        .btn-danger {
+            background-color: #e74c3c;
+            color: white;
+        }
+        .btn-danger:hover {
+            background-color: #c0392b;
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #2c3e50;
+            border-radius: 4px;
+            color: #ecf0f1;
+            font-family: monospace;
+            word-break: break-all;
+        }
+        .result-title {
+            margin-bottom: 10px;
+            font-weight: bold;
+            font-size: 18px;
+            color: #7f8c8d;
+        }
+        .code-block {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px 20px;
+            border-radius: 4px;
+            font-family: monospace;
+            overflow-x: auto;
+            margin: 15px 0;
+        }
+        .code-comment {
+            color: #7f8c8d;
+        }
+        .method-list {
+            margin-top: 20px;
+        }
+        .method-item {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+        .method-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #2980b9;
+        }
+        .method-description {
+            color: #555;
+            margin-bottom: 8px;
+        }
+        .method-example {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #3498db;
+            text-decoration: none;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        .footer-nav {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .nav-link {
+            color: #3498db;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+        .nav-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>URL构建工具</h1>
+            <p>框架提供的链式URL构建工具，轻松创建完整的URL地址</p>
+        </header>
+
+        <div class="section">
+            <h2>交互式URL构建演示</h2>
+            <p>使用下方表单构建URL，观察各种参数对最终URL的影响。</p>
+            
+            <div class="url-builder">
+                <div class="form-group">
+                    <label for="base-path">基础路径</label>
+                    <input type="text" id="base-path" class="form-control" placeholder="例如: /api/users" value="{{.basePath}}">
+                </div>
+                
+                <div class="form-group">
+                    <label for="scheme">协议</label>
+                    <select id="scheme" class="form-control">
+                        <option value="" {{if eq .scheme ""}}selected{{end}}>使用当前请求协议</option>
+                        <option value="http" {{if eq .scheme "http"}}selected{{end}}>http</option>
+                        <option value="https" {{if eq .scheme "https"}}selected{{end}}>https</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="domain">域名</label>
+                    <input type="text" id="domain" class="form-control" placeholder="例如: example.com (留空使用当前域名)" value="{{.domain}}">
+                </div>
+                
+                <div class="form-group">
+                    <label>查询参数</label>
+                    <div class="parameter-container" id="parameter-container">
+                        {{range $index, $param := .params}}
+                        <div class="parameter-row">
+                            <div class="parameter-field">
+                                <input type="text" class="form-control param-key" placeholder="参数名" value="{{$param.key}}">
+                            </div>
+                            <div class="parameter-field">
+                                <input type="text" class="form-control param-value" placeholder="参数值" value="{{$param.value}}">
+                            </div>
+                            <button type="button" class="btn btn-danger remove-param">删除</button>
+                        </div>
+                        {{else}}
+                        <div class="parameter-row">
+                            <div class="parameter-field">
+                                <input type="text" class="form-control param-key" placeholder="参数名">
+                            </div>
+                            <div class="parameter-field">
+                                <input type="text" class="form-control param-value" placeholder="参数值">
+                            </div>
+                            <button type="button" class="btn btn-danger remove-param">删除</button>
+                        </div>
+                        {{end}}
+                    </div>
+                    
+                    <button type="button" id="add-param" class="btn btn-secondary" style="margin-top: 10px;">添加参数</button>
+                </div>
+                
+                <div class="form-group">
+                    <label>路径变量</label>
+                    <div class="parameter-container" id="path-vars-container">
+                        {{range $index, $var := .pathVars}}
+                        <div class="parameter-row">
+                            <div class="parameter-field">
+                                <input type="text" class="form-control path-var-key" placeholder="变量名" value="{{$var.key}}">
+                            </div>
+                            <div class="parameter-field">
+                                <input type="text" class="form-control path-var-value" placeholder="变量值" value="{{$var.value}}">
+                            </div>
+                            <button type="button" class="btn btn-danger remove-path-var">删除</button>
+                        </div>
+                        {{else}}
+                        <div class="parameter-row">
+                            <div class="parameter-field">
+                                <input type="text" class="form-control path-var-key" placeholder="变量名">
+                            </div>
+                            <div class="parameter-field">
+                                <input type="text" class="form-control path-var-value" placeholder="变量值">
+                            </div>
+                            <button type="button" class="btn btn-danger remove-path-var">删除</button>
+                        </div>
+                        {{end}}
+                    </div>
+                    
+                    <button type="button" id="add-path-var" class="btn btn-secondary" style="margin-top: 10px;">添加路径变量</button>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="fragment" {{if .hasFragment}}checked{{end}}> 添加URL片段（锚点）
+                    </label>
+                    <input type="text" id="fragment-value" class="form-control" style="margin-top: 5px;" placeholder="例如: section-1" value="{{.fragment}}" {{if not .hasFragment}}disabled{{end}}>
+                </div>
+                
+                <div class="actions">
+                    <button type="button" id="build-url" class="btn btn-primary">构建URL</button>
+                    <button type="button" id="reset-form" class="btn btn-secondary">重置</button>
+                </div>
+                
+                <div class="result" id="result" style="display: {{if .showResult}}block{{else}}none{{end}};">
+                    <div class="result-title">构建结果：</div>
+                    <div id="url-result">{{.result}}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>代码示例</h2>
+            <p>框架提供链式API，让URL构建变得简单直观。</p>
+            
+            <div class="code-block">
+                <div><span class="code-comment">// 基础URL构建</span></div>
+                <div>url := c.BuildUrl("/api/users").Builder()</div>
+                <div><span class="code-comment">// 输出: https://example.com/api/users</span></div>
+                <div></div>
+                <div><span class="code-comment">// 带参数的URL构建</span></div>
+                <div>url := c.BuildUrl("/api/users")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Set("page", 1)</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Set("limit", 10)</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Builder()</div>
+                <div><span class="code-comment">// 输出: https://example.com/api/users?page=1&limit=10</span></div>
+                <div></div>
+                <div><span class="code-comment">// 完整配置的URL构建</span></div>
+                <div>url := c.BuildUrl("/api/{resource}/{id}")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Scheme("https")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Domain("api.example.com")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.PathVar("resource", "users")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.PathVar("id", "123")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Set("token", "abc123")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Fragment("profile")</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;.Builder()</div>
+                <div><span class="code-comment">// 输出: https://api.example.com/api/users/123?token=abc123#profile</span></div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>可用方法</h2>
+            <p>URL构建器提供丰富的链式方法，满足各种URL构建需求。</p>
+            
+            <div class="method-list">
+                <div class="method-item">
+                    <div class="method-name">Set(key string, value interface{})</div>
+                    <div class="method-description">设置URL查询参数</div>
+                    <div class="method-example">urlBuilder.Set("page", 1)</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">Sets(values map[string]interface{})</div>
+                    <div class="method-description">批量设置多个URL查询参数</div>
+                    <div class="method-example">urlBuilder.Sets(map[string]interface{}{"page": 1, "limit": 10})</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">PathVar(key string, value interface{})</div>
+                    <div class="method-description">设置URL路径变量，替换路径中的 {key} 占位符</div>
+                    <div class="method-example">urlBuilder.PathVar("id", 123) // 替换 /users/{id} 成 /users/123</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">PathVars(values map[string]interface{})</div>
+                    <div class="method-description">批量设置多个URL路径变量</div>
+                    <div class="method-example">urlBuilder.PathVars(map[string]interface{}{"id": 123, "type": "admin"})</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">Scheme(scheme string)</div>
+                    <div class="method-description">设置URL协议，如 http 或 https</div>
+                    <div class="method-example">urlBuilder.Scheme("https")</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">Domain(domain string)</div>
+                    <div class="method-description">设置URL域名</div>
+                    <div class="method-example">urlBuilder.Domain("api.example.com")</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">Fragment(fragment string)</div>
+                    <div class="method-description">设置URL片段（锚点）</div>
+                    <div class="method-example">urlBuilder.Fragment("section-1")</div>
+                </div>
+                
+                <div class="method-item">
+                    <div class="method-name">Builder()</div>
+                    <div class="method-description">构建并返回最终的URL字符串</div>
+                    <div class="method-example">url := urlBuilder.Builder()</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 添加查询参数
+            document.getElementById('add-param').addEventListener('click', function() {
+                const container = document.getElementById('parameter-container');
+                const paramRow = document.createElement('div');
+                paramRow.className = 'parameter-row';
+                paramRow.innerHTML = `
+                    <div class="parameter-field">
+                        <input type="text" class="form-control param-key" placeholder="参数名">
+                    </div>
+                    <div class="parameter-field">
+                        <input type="text" class="form-control param-value" placeholder="参数值">
+                    </div>
+                    <button type="button" class="btn btn-danger remove-param">删除</button>
+                `;
+                container.appendChild(paramRow);
+                
+                // 添加删除事件
+                paramRow.querySelector('.remove-param').addEventListener('click', function() {
+                    container.removeChild(paramRow);
+                });
+            });
+            
+            // 添加路径变量
+            document.getElementById('add-path-var').addEventListener('click', function() {
+                const container = document.getElementById('path-vars-container');
+                const varRow = document.createElement('div');
+                varRow.className = 'parameter-row';
+                varRow.innerHTML = `
+                    <div class="parameter-field">
+                        <input type="text" class="form-control path-var-key" placeholder="变量名">
+                    </div>
+                    <div class="parameter-field">
+                        <input type="text" class="form-control path-var-value" placeholder="变量值">
+                    </div>
+                    <button type="button" class="btn btn-danger remove-path-var">删除</button>
+                `;
+                container.appendChild(varRow);
+                
+                // 添加删除事件
+                varRow.querySelector('.remove-path-var').addEventListener('click', function() {
+                    container.removeChild(varRow);
+                });
+            });
+            
+            // 设置删除参数事件
+            document.querySelectorAll('.remove-param').forEach(button => {
+                button.addEventListener('click', function() {
+                    const row = this.closest('.parameter-row');
+                    row.parentNode.removeChild(row);
+                });
+            });
+            
+            // 设置删除路径变量事件
+            document.querySelectorAll('.remove-path-var').forEach(button => {
+                button.addEventListener('click', function() {
+                    const row = this.closest('.parameter-row');
+                    row.parentNode.removeChild(row);
+                });
+            });
+            
+            // 片段复选框切换
+            document.getElementById('fragment').addEventListener('change', function() {
+                document.getElementById('fragment-value').disabled = !this.checked;
+            });
+            
+            // 构建URL
+            document.getElementById('build-url').addEventListener('click', function() {
+                // 收集表单数据
+                const basePath = document.getElementById('base-path').value;
+                const scheme = document.getElementById('scheme').value;
+                const domain = document.getElementById('domain').value;
+                
+                // 收集查询参数
+                const params = [];
+                document.querySelectorAll('.parameter-row').forEach(row => {
+                    const keyInput = row.querySelector('.param-key');
+                    const valueInput = row.querySelector('.param-value');
+                    if (keyInput && valueInput && keyInput.value.trim() !== '') {
+                        params.push({
+                            key: keyInput.value.trim(),
+                            value: valueInput.value
+                        });
+                    }
+                });
+                
+                // 收集路径变量
+                const pathVars = [];
+                document.querySelectorAll('#path-vars-container .parameter-row').forEach(row => {
+                    const keyInput = row.querySelector('.path-var-key');
+                    const valueInput = row.querySelector('.path-var-value');
+                    if (keyInput && valueInput && keyInput.value.trim() !== '') {
+                        pathVars.push({
+                            key: keyInput.value.trim(),
+                            value: valueInput.value
+                        });
+                    }
+                });
+                
+                // 获取fragment
+                const hasFragment = document.getElementById('fragment').checked;
+                const fragment = hasFragment ? document.getElementById('fragment-value').value : '';
+                
+                // 提交表单
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/url';
+                form.style.display = 'none';
+                
+                // 添加所有字段作为表单数据
+                const addField = (name, value) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = name;
+                    input.value = value;
+                    form.appendChild(input);
+                };
+                
+                addField('basePath', basePath);
+                addField('scheme', scheme);
+                addField('domain', domain);
+                
+                params.forEach((param, index) => {
+                    addField(`params[${index}].key`, param.key);
+                    addField(`params[${index}].value`, param.value);
+                });
+                
+                pathVars.forEach((pathVar, index) => {
+                    addField(`pathVars[${index}].key`, pathVar.key);
+                    addField(`pathVars[${index}].value`, pathVar.value);
+                });
+                
+                addField('hasFragment', hasFragment ? '1' : '0');
+                if (hasFragment) {
+                    addField('fragment', fragment);
+                }
+                
+                document.body.appendChild(form);
+                form.submit();
+            });
+            
+            // 重置表单
+            document.getElementById('reset-form').addEventListener('click', function() {
+                document.getElementById('base-path').value = '';
+                document.getElementById('scheme').value = '';
+                document.getElementById('domain').value = '';
+                document.getElementById('fragment').checked = false;
+                document.getElementById('fragment-value').value = '';
+                document.getElementById('fragment-value').disabled = true;
+                
+                // 清除所有参数
+                const paramContainer = document.getElementById('parameter-container');
+                while (paramContainer.children.length > 1) {
+                    paramContainer.removeChild(paramContainer.lastChild);
+                }
+                const firstParamRow = paramContainer.querySelector('.parameter-row');
+                if (firstParamRow) {
+                    firstParamRow.querySelector('.param-key').value = '';
+                    firstParamRow.querySelector('.param-value').value = '';
+                }
+                
+                // 清除所有路径变量
+                const pathVarsContainer = document.getElementById('path-vars-container');
+                while (pathVarsContainer.children.length > 1) {
+                    pathVarsContainer.removeChild(pathVarsContainer.lastChild);
+                }
+                const firstPathVarRow = pathVarsContainer.querySelector('.parameter-row');
+                if (firstPathVarRow) {
+                    firstPathVarRow.querySelector('.path-var-key').value = '';
+                    firstPathVarRow.querySelector('.path-var-value').value = '';
+                }
+                
+                // 隐藏结果
+                document.getElementById('result').style.display = 'none';
+            });
+        });
+    </script>
+
+    <!-- 底部导航 -->
+    <div class="footer-nav">
+        <a href="/" class="nav-link">首页</a>
+        <a href="/docs" class="nav-link">API文档</a>
+        <a href="/i18n" class="nav-link">国际化支持</a>
+        <a href="/utils/info" class="nav-link">请求信息</a>
+        <a href="/form" class="nav-link">表单验证</a>
+        <a href="/security" class="nav-link">安全增强</a>
+        <a href="/sse" class="nav-link">SSE演示</a>
+    </div>
+</body>
+</html> 
