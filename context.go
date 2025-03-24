@@ -234,20 +234,32 @@ func (c *Context) GetUserAgent() string {
 	return c.GetHeader("User-Agent")
 }
 
-// GetToken 从请求头获取Token
+// GetToken 获取请求Token，支持多种来源和自定义键名
+// 依次从Header、URL参数、表单参数和Cookie中获取
 func (c *Context) GetToken(name ...string) string {
 	key := "Authorization"
+	cookieKey := JWTCookieKey
+
 	if len(name) > 0 {
 		key = name[0]
+		cookieKey = name[0]
 	}
+
+	// 从Header获取
 	token := c.GetHeader(key)
-	if token == "" {
-		token = c.Param(key)
+	if token != "" {
+		token = strings.TrimPrefix(token, "Bearer ")
+		return token
 	}
-	if token == "" {
-		return ""
+
+	// 从URL参数和表单获取
+	token = c.Param(key)
+	if token != "" {
+		return token
 	}
-	token = strings.TrimPrefix(token, "Bearer ")
+
+	// 从Cookie获取
+	token, _ = c.Cookie(cookieKey)
 	return token
 }
 
@@ -761,7 +773,7 @@ func (c *Context) BindUri(obj interface{}) bool {
 const (
 	JWTHeaderKey = "Authorization"
 	JWTQueryKey  = "token"
-	JWTCookieKey = "jwt"
+	JWTCookieKey = "token"
 	JWTPrefix    = "Bearer "
 
 	// JWT算法
@@ -1032,6 +1044,38 @@ func base64URLDecode(s string) ([]byte, error) {
 
 // 添加到Context的JWT方法
 
+// JWTOptions JWT处理选项
+type JWTOptions struct {
+	Validate     bool   // 是否验证令牌
+	RequireToken bool   // 是否要求令牌存在
+	SecretKey    string // 密钥（验证时需要）
+	AutoRespond  bool   // 失败时是否自动响应401
+}
+
+// SetJWT 设置JWT令牌到Cookie
+func (c *Context) SetJWT(token string, maxAge int) {
+	c.SetCookie(JWTCookieKey, token, maxAge, "/", c.RootDomain(), c.IsSsl(), true)
+}
+
+// GetJWT 获取JWT令牌(从标准JWT位置)
+func (c *Context) GetJWT() string {
+	// 从Header获取
+	token := c.GetHeader(JWTHeaderKey)
+	if token != "" {
+		return strings.TrimPrefix(token, JWTPrefix)
+	}
+
+	// 从Query获取
+	token = c.Query(JWTQueryKey)
+	if token != "" {
+		return token
+	}
+
+	// 从Cookie获取
+	token, _ = c.Cookie(JWTCookieKey)
+	return token
+}
+
 // GenerateJWT 生成JWT令牌
 func (c *Context) GenerateJWT(secretKey string, payload JWTPayload) (string, error) {
 	jwt := newJWTUtil(secretKey)
@@ -1040,7 +1084,7 @@ func (c *Context) GenerateJWT(secretKey string, payload JWTPayload) (string, err
 
 // ValidateJWT 验证JWT令牌
 func (c *Context) ValidateJWT(secretKey string, token ...string) (JWTPayload, error) {
-	tk := c.GetToken()
+	tk := c.GetJWT()
 	if len(token) > 0 {
 		tk = token[0]
 	}
@@ -1073,19 +1117,95 @@ func (c *Context) ParseJWTPayload(token string) (JWTPayload, error) {
 
 // RequireJWT 要求JWT令牌有效并返回载荷
 func (c *Context) RequireJWT(secretKey string) (JWTPayload, bool) {
+	// 使用 GetJWTWithOptions
+	payload, err := c.GetJWTWithOptions(JWTOptions{
+		Validate:     true,
+		RequireToken: true,
+		SecretKey:    secretKey,
+		AutoRespond:  true,
+	})
+
+	return payload, err == nil
+}
+
+// GetJWTPayload 获取当前请求JWT的载荷，不验证签名
+func (c *Context) GetJWTPayload() (JWTPayload, error) {
+	// 使用 GetJWTWithOptions
+	return c.GetJWTWithOptions(JWTOptions{
+		Validate:     false,
+		RequireToken: true,
+		AutoRespond:  false,
+	})
+}
+
+// GetJWTWithOptions 获取JWT令牌载荷，支持多种行为选项
+func (c *Context) GetJWTWithOptions(options JWTOptions) (JWTPayload, error) {
+	// 获取令牌
 	token := c.GetJWT()
+
+	// 检查令牌是否存在
 	if token == "" {
-		c.Unauthorized("缺少认证令牌")
-		return nil, false
+		if options.RequireToken {
+			if options.AutoRespond {
+				c.Unauthorized("缺少认证令牌")
+			}
+			return nil, fmt.Errorf("缺少认证令牌")
+		}
+		return JWTPayload{}, nil
 	}
 
-	payload, err := c.ValidateJWT(secretKey, token)
+	// 根据选项决定是否验证
+	if options.Validate {
+		if options.SecretKey == "" {
+			return nil, fmt.Errorf("验证JWT需要提供密钥")
+		}
+
+		// 验证令牌
+		payload, err := c.ValidateJWT(options.SecretKey, token)
+		if err != nil {
+			if options.AutoRespond {
+				c.Unauthorized(fmt.Sprintf("无效的认证令牌: %v", err))
+			}
+			return nil, err
+		}
+		return payload, nil
+	}
+
+	// 不验证，只解析
+	return c.ParseJWTPayload(token)
+}
+
+// ValidateJWTWithOptions 使用选项验证JWT令牌
+func (c *Context) ValidateJWTWithOptions(token string, options JWTOptions) (JWTPayload, error) {
+	// 确保选项中包含验证标志
+	options.Validate = true
+
+	// 使用提供的令牌而非自动获取
+	if token == "" {
+		if options.RequireToken {
+			if options.AutoRespond {
+				c.Unauthorized("缺少认证令牌")
+			}
+			return nil, fmt.Errorf("缺少认证令牌")
+		}
+		return JWTPayload{}, nil
+	}
+
+	// 验证令牌
+	if options.SecretKey == "" {
+		return nil, fmt.Errorf("验证JWT需要提供密钥")
+	}
+
+	// 验证令牌
+	payload, err := c.ValidateJWT(options.SecretKey, token)
 	if err != nil {
-		c.Unauthorized(fmt.Sprintf("无效的认证令牌: %v", err))
-		return nil, false
+		if options.AutoRespond {
+			c.Unauthorized(fmt.Sprintf("无效的认证令牌: %v", err))
+		}
+		return nil, err
 	}
 
-	return payload, true
+	return payload, nil
 }
 
 // CreateJWTSession 使用JWT创建用户会话
@@ -1451,30 +1571,6 @@ func (c *Context) Paginate(defaultPageSize ...int) (page, pageSize int) {
 	}
 
 	return page, pageSize
-}
-
-// GetJWT 获取JWT令牌
-func (c *Context) GetJWT() string {
-	// 从Header获取
-	token := c.GetHeader(JWTHeaderKey)
-	if token != "" {
-		return strings.TrimPrefix(token, JWTPrefix)
-	}
-
-	// 从Query获取
-	token = c.Query(JWTQueryKey)
-	if token != "" {
-		return token
-	}
-
-	// 从Cookie获取
-	token, _ = c.Cookie(JWTCookieKey)
-	return token
-}
-
-// SetJWT 设置JWT令牌到Cookie
-func (c *Context) SetJWT(token string, maxAge int) {
-	c.SetCookie(JWTCookieKey, token, maxAge, "/", c.RootDomain(), c.IsSsl(), true)
 }
 
 // ClearJWT 清除JWT令牌

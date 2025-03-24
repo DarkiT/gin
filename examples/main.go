@@ -240,20 +240,8 @@ func setupRoutes(r *gin.Router) {
 
 // AuthMiddleware 认证中间件
 func AuthMiddleware(c *gin.Context) {
-	// 从请求头获取Token
-	token := c.GetHeader("Authorization")
-	if token == "" {
-		// 尝试从Cookie中获取
-		token, _ = c.Cookie("jwt_token")
-	}
-
-	// 如果没有token，则尝试从查询参数获取
-	if token == "" {
-		token = c.Query("token")
-	}
-
-	// 如果仍然没有token，则视为未授权
-	if token == "" {
+	jwt, ok := c.RequireJWT(JWTSecretKey)
+	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"code": 401,
 			"msg":  "未授权访问，请先登录",
@@ -262,14 +250,9 @@ func AuthMiddleware(c *gin.Context) {
 		return
 	}
 
-	// 这里简化处理，实际应用中需要验证JWT令牌
-	// 模拟查询用户信息
-	userID := "user_123"
-	username := "demo"
-
 	// 将用户信息设置到上下文中
-	c.Set("user_id", userID)
-	c.Set("username", username)
+	c.Set("jwt_id", jwt.GetJWTID())
+	c.Set("expires_at", jwt.GetExpiresAt())
 
 	c.Next()
 }
@@ -372,10 +355,11 @@ func handleLogin(c *gin.Context) {
 	userID := fmt.Sprintf("user_%d", time.Now().Unix())
 
 	// 生成简单的token（实际应用中应该使用JWT）
-	token := fmt.Sprintf("token_%s_%d", username, time.Now().Unix())
-
-	// 设置Cookie
-	c.SetCookie("jwt_token", token, 3600, "/", "", false, false)
+	token, _ := c.CreateJWTSession(JWTSecretKey, 1*time.Hour, gin.H{
+		"user_id":  userID,
+		"username": username,
+		"time":     time.Now().Unix(),
+	})
 
 	// 对于POST请求，返回JSON而不是重定向
 	if isPost {
@@ -1166,7 +1150,7 @@ func handleSSEPage(c *gin.Context) {
 // handleAPIDemo 显示API演示页面
 func handleAPIDemo(c *gin.Context) {
 	// 从上下文中获取用户信息
-	userID, exists := c.Get("user_id")
+	userInfo, exists := c.RequireJWT(JWTSecretKey)
 	if !exists {
 		// 重定向到登录页面
 		c.HTML(302, "login.html", gin.H{
@@ -1179,9 +1163,9 @@ func handleAPIDemo(c *gin.Context) {
 	username := c.GetString("username")
 
 	c.HTML(200, "api.html", gin.H{
-		"title":    "API演示",
-		"user_id":  userID,
-		"username": username,
+		"title":     "API演示",
+		"user_info": userInfo,
+		"username":  username,
 		"endpoints": []gin.H{
 			{"path": "/api/user/profile", "method": "GET", "desc": "获取用户资料"},
 			{"path": "/api/user/update", "method": "POST", "desc": "更新用户资料"},

@@ -1571,6 +1571,18 @@ func (c *Cache[K, V]) LTrim(key K, start, stop int) bool {
 	return true
 }
 
+// AddToListWithLimit 将元素添加到列表，并在超出限制时修剪列表
+func (c *Cache[K, V]) AddToListWithLimit(key K, value V, maxSize int) {
+	// 将新元素推入列表
+	c.RPush(key, value)
+
+	// 获取列表长度是否超限
+	if c.LLen(key) > maxSize {
+		// 修剪列表到最大大小
+		c.LTrim(key, -maxSize, -1)
+	}
+}
+
 //------------------------------------------------------------------------------
 // 事务支持
 //------------------------------------------------------------------------------
