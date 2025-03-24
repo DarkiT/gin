@@ -287,14 +287,14 @@
                 })
                 .then(response => response.json())
                 .then(data => {
-                    if (data.code === 0) {
+                    if (data.code > 0) {
                         // 验证成功
                         resultSuccess.style.display = 'block';
                         successData.textContent = JSON.stringify(data, null, 2);
                     } else {
                         // 验证失败
                         resultFailure.style.display = 'block';
-                        failureData.textContent = data.msg;
+                        failureData.textContent = data.message;
                     }
                 })
                 .catch(error => {

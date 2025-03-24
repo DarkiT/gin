@@ -19,7 +19,6 @@ Gin是一个高性能的Web框架，本项目在保持 Gin 高性能特性的同
 - 服务器发送事件(SSE)支持
 - JWT认证系统（零依赖，基于标准库）
 - 数据验证辅助
-- 缓存控制方法
 - 安全性增强
 - 国际化支持
 - 会话管理工具
@@ -127,11 +126,9 @@ const secretKey = "your-secure-secret-key"
 
 // 用户登录
 r.POST("/login", func(c *gin.Context) {
-    // 验证用户凭据...
-    userID := "12345" // 验证成功后获取的用户ID
-    
+
     // 创建JWT会话，有效期24小时
-    token, err := c.CreateJWTSession(secretKey, userID, 24*time.Hour, gin.H{
+    token, err := c.CreateJWTSession(secretKey, 24*time.Hour, gin.H{
         "username": "张三",
         "role": "admin",
     })
@@ -222,22 +219,6 @@ r.POST("/users", func(c *gin.Context) {
     
     // 数据验证通过，继续处理...
     c.Success(gin.H{"message": "用户创建成功"})
-})
-```
-
-### 缓存控制
-
-```go
-r.GET("/no-cache", func(c *gin.Context) {
-    // 设置禁止缓存响应头
-    c.NoCache()
-    c.Success("这个响应不会被缓存")
-})
-
-r.GET("/cache", func(c *gin.Context) {
-    // 设置缓存300秒
-    c.Cache(300)
-    c.Success("这个响应会被缓存5分钟")
 })
 ```
 
@@ -488,9 +469,6 @@ url := c.BuildUrl("/api/users").
        Domain("api.example.com").
        Scheme("https").
        Builder()
-
-// 注意: 从2.0版本开始，URL构建器的方法已更改为私有方法
-// 但仍然保持链式调用的便捷特性
 ```
 
 ### 请求信息获取
@@ -544,12 +522,12 @@ api.Resource("/users", &UserResource{})
 func main() {
     r := gin.Default()
     
-    // 初始化全局缓存
+    // 更改缓存系统，系统初始化时默认缓存 (2小时过期，10分钟清理)
     // 参数: 默认过期时间, 清理间隔
-    cache := gin.SetGlobalCache(10*time.Minute, 30*time.Second)
+    r.SetCacheConfig(10*time.Minute, 30*time.Second)
     
     // 带持久化的缓存
-    // gin.SetGlobalCacheWithPersistence(10*time.Minute, 30*time.Second, "./cache.dat", 5*time.Minute)
+    // r.EnablePersistCache("./new_cache.dat", time.Minute*10)
     
     r.GET("/cache/set", func(c *gin.Context) {
         // 设置缓存，可选过期时间（不传则使用默认过期时间）
@@ -694,24 +672,6 @@ func main() {
 - **统计信息**：提供缓存使用统计和性能监控
 - **并发安全**：所有操作都是线程安全的
 - **零依赖**：纯Go实现，无外部依赖
-
-#### 缓存配置选项
-
-```go
-// 创建缓存时的配置选项
-cache := gin.SetGlobalCache(
-    5*time.Minute,  // 默认过期时间
-    30*time.Second, // 清理间隔
-)
-
-// 启用持久化
-cache := gin.SetGlobalCacheWithPersistence(
-    5*time.Minute,   // 默认过期时间
-    30*time.Second,  // 清理间隔
-    "./cache.dat",   // 持久化文件路径
-    5*time.Minute,   // 自动保存间隔
-)
-```
 
 ## 统一响应格式
 

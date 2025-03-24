@@ -1,4 +1,4 @@
-package gin
+package cache
 
 import (
 	"encoding/gob"
@@ -12,23 +12,23 @@ import (
 	"time"
 )
 
-// cacheItem 表示缓存中的一个项目
-type cacheItem[T any] struct {
-	value      T
-	expiration int64 // Unix时间戳，表示过期时间
+// CacheItem 表示缓存中的一个项目
+type CacheItem[T any] struct {
+	Value      T
+	Expiration int64 // Unix时间戳，表示过期时间
 }
 
-// listItem 表示列表中的一个项目
-type listItem[T any] struct {
-	value T
+// ListItem 表示列表中的一个项目
+type ListItem[T any] struct {
+	Value T
 }
 
-// persistenceData 持久化数据结构
-type persistenceData[K comparable, V any] struct {
-	items             map[K]cacheItem[V]
-	listItems         map[K][]listItem[V]
-	expiration        map[K]int64
-	defaultExpiration time.Duration
+// PersistenceData 持久化数据结构
+type PersistenceData[K comparable, V any] struct {
+	Items             map[K]CacheItem[V]
+	ListItems         map[K][]ListItem[V]
+	Expiration        map[K]int64
+	DefaultExpiration time.Duration
 }
 
 // Stats 缓存统计信息
@@ -51,9 +51,9 @@ type Stats struct {
 // Cache 是一个综合的缓存实现，支持内存缓存和列表缓存
 type Cache[K comparable, V any] struct {
 	// 基本内存缓存项
-	items map[K]cacheItem[V]
+	items map[K]CacheItem[V]
 	// 列表缓存项
-	listItems map[K][]listItem[V]
+	listItems map[K][]ListItem[V]
 	// 通用过期时间映射（主要用于列表缓存）
 	expiration map[K]int64
 	// 互斥锁
@@ -89,8 +89,8 @@ type Cache[K comparable, V any] struct {
 // cleanupInterval: 清理过期项的间隔时间
 func NewCache[K comparable, V any](defaultExpiration, cleanupInterval time.Duration) *Cache[K, V] {
 	cache := &Cache[K, V]{
-		items:             make(map[K]cacheItem[V]),
-		listItems:         make(map[K][]listItem[V]),
+		items:             make(map[K]CacheItem[V]),
+		listItems:         make(map[K][]ListItem[V]),
 		expiration:        make(map[K]int64),
 		mu:                sync.RWMutex{},
 		cleanupInterval:   cleanupInterval,
@@ -106,6 +106,13 @@ func NewCache[K comparable, V any](defaultExpiration, cleanupInterval time.Durat
 		go cache.startCleanupTimer()
 	}
 
+	return cache
+}
+
+// NewCacheWithPersistence 初始化带持久化的全局缓存
+func NewCacheWithPersistence[K comparable, V any](defaultExpiration, cleanupInterval time.Duration, persistPath string, autoPersistInterval time.Duration) *Cache[K, V] {
+	cache := NewCache[K, V](defaultExpiration, cleanupInterval).WithPersistence(persistPath, autoPersistInterval)
+	cache.EnableAutoPersist()
 	return cache
 }
 
@@ -173,80 +180,71 @@ func (c *Cache[K, V]) startAutoPersistTimer() {
 	}
 }
 
-// Save 将缓存保存到文件
+// Save 保存缓存到文件
 func (c *Cache[K, V]) Save() error {
 	if c.persistPath == "" {
-		return errors.New("persist path not set")
+		return errors.New("persistence path not set")
 	}
 
-	// 确保目录存在
-	dir := filepath.Dir(c.persistPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+	c.mu.RLock()
+	data := PersistenceData[K, V]{
+		Items:             make(map[K]CacheItem[V]),
+		ListItems:         make(map[K][]ListItem[V]),
+		Expiration:        make(map[K]int64),
+		DefaultExpiration: c.defaultExpiration,
 	}
+
+	// 只保存未过期的项目
+	now := time.Now().UnixNano()
+	for k, v := range c.items {
+		if v.Expiration <= 0 || v.Expiration > now {
+			data.Items[k] = v
+		}
+	}
+
+	for k, v := range c.listItems {
+		exp, hasExp := c.expiration[k]
+		if !hasExp || exp <= 0 || exp > now {
+			data.ListItems[k] = v
+			if hasExp {
+				data.Expiration[k] = exp
+			}
+		}
+	}
+	c.mu.RUnlock()
 
 	// 创建临时文件
 	tempFile := c.persistPath + ".tmp"
 	file, err := os.Create(tempFile)
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return fmt.Errorf("error creating temporary file: %w", err)
 	}
 
-	c.mu.RLock()
-	data := persistenceData[K, V]{
-		items:             make(map[K]cacheItem[V]),
-		listItems:         make(map[K][]listItem[V]),
-		expiration:        make(map[K]int64),
-		defaultExpiration: c.defaultExpiration,
-	}
-
-	// 只保存未过期的项
-	now := time.Now().UnixNano()
-	for k, v := range c.items {
-		if v.expiration <= 0 || v.expiration > now {
-			data.items[k] = v
-		}
-	}
-
-	// 保存列表项
-	for k, v := range c.listItems {
-		if !c.isExpired(k) {
-			data.listItems[k] = v
-		}
-	}
-
-	// 保存过期时间
-	for k, v := range c.expiration {
-		if v <= 0 || v > now {
-			data.expiration[k] = v
-		}
-	}
-	c.mu.RUnlock()
-
-	// 编码并写入文件
+	// 使用gob编码数据
 	encoder := gob.NewEncoder(file)
 	if err := encoder.Encode(data); err != nil {
 		file.Close()
-		return fmt.Errorf("failed to encode data: %w", err)
+		return fmt.Errorf("error encoding cache data: %w", err)
 	}
 
-	// 确保数据完全写入
 	if err := file.Sync(); err != nil {
 		file.Close()
-		return fmt.Errorf("failed to sync file: %w", err)
+		return fmt.Errorf("error syncing file: %w", err)
 	}
 
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("failed to close file: %w", err)
+		return fmt.Errorf("error closing file: %w", err)
 	}
 
-	// 替换原文件
+	// 重命名临时文件（原子操作）
 	if err := os.Rename(tempFile, c.persistPath); err != nil {
-		return fmt.Errorf("failed to replace file: %w", err)
+		return fmt.Errorf("error renaming temporary file: %w", err)
 	}
 
+	c.mu.Lock()
 	c.lastSaveTime = time.Now()
 	c.dirty.Store(false)
+	c.mu.Unlock()
 
 	return nil
 }
@@ -254,54 +252,54 @@ func (c *Cache[K, V]) Save() error {
 // Load 从文件加载缓存
 func (c *Cache[K, V]) Load() error {
 	if c.persistPath == "" {
-		return errors.New("persist path not set")
+		return errors.New("persistence path not set")
 	}
 
 	file, err := os.Open(c.persistPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("cache file does not exist: %w", err)
+			return nil // 文件不存在不是错误，只是还没有持久化数据
 		}
-		return fmt.Errorf("failed to open cache file: %w", err)
+		return fmt.Errorf("error opening persistence file: %w", err)
 	}
 	defer file.Close()
 
-	var data persistenceData[K, V]
+	var data PersistenceData[K, V]
 	decoder := gob.NewDecoder(file)
 	if err := decoder.Decode(&data); err != nil {
 		if err == io.EOF {
-			return errors.New("cache file is empty")
+			return nil // 空文件不是错误
 		}
-		return fmt.Errorf("failed to decode data: %w", err)
+		return fmt.Errorf("error decoding persistence data: %w", err)
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// 清空当前数据
-	c.items = make(map[K]cacheItem[V])
-	c.listItems = make(map[K][]listItem[V])
+	c.items = make(map[K]CacheItem[V])
+	c.listItems = make(map[K][]ListItem[V])
 	c.expiration = make(map[K]int64)
 
 	// 只加载未过期的项
 	now := time.Now().UnixNano()
-	for k, v := range data.items {
-		if v.expiration <= 0 || v.expiration > now {
+	for k, v := range data.Items {
+		if v.Expiration <= 0 || v.Expiration > now {
 			c.items[k] = v
 		}
 	}
 
-	// 加载列表项
-	for k, v := range data.listItems {
-		c.listItems[k] = v
+	for k, v := range data.ListItems {
+		exp, hasExp := data.Expiration[k]
+		if !hasExp || exp <= 0 || exp > now {
+			c.listItems[k] = v
+			if hasExp {
+				c.expiration[k] = exp
+			}
+		}
 	}
 
-	// 加载过期时间
-	for k, v := range data.expiration {
-		c.expiration[k] = v
-	}
-
-	c.defaultExpiration = data.defaultExpiration
+	c.defaultExpiration = data.DefaultExpiration
 	c.lastLoadTime = time.Now()
 	c.dirty.Store(false)
 
@@ -351,7 +349,7 @@ func (c *Cache[K, V]) DeleteExpired() {
 
 	// 清理普通缓存项
 	for k, v := range c.items {
-		if v.expiration > 0 && now > v.expiration {
+		if v.Expiration > 0 && now > v.Expiration {
 			delete(c.items, k)
 			removed++
 		}
@@ -439,8 +437,8 @@ func (c *Cache[K, V]) GetStats() Stats {
 // Flush 清除所有数据并删除持久化文件
 func (c *Cache[K, V]) Flush() error {
 	c.mu.Lock()
-	c.items = make(map[K]cacheItem[V])
-	c.listItems = make(map[K][]listItem[V])
+	c.items = make(map[K]CacheItem[V])
+	c.listItems = make(map[K][]ListItem[V])
 	c.expiration = make(map[K]int64)
 	c.mu.Unlock()
 
@@ -467,15 +465,15 @@ func (c *Cache[K, V]) GetTTL(key K) (time.Duration, bool) {
 		return 0, false
 	}
 
-	if item.expiration < 0 {
+	if item.Expiration < 0 {
 		return -1, true // 永不过期
 	}
 
-	if item.expiration == 0 {
+	if item.Expiration == 0 {
 		return 0, true // 已过期
 	}
 
-	remaining := time.Duration(item.expiration - time.Now().UnixNano())
+	remaining := time.Duration(item.Expiration - time.Now().UnixNano())
 	if remaining < 0 {
 		return 0, true // 已过期
 	}
@@ -536,9 +534,9 @@ func (c *Cache[K, V]) Set(key K, value V, duration ...time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.items[key] = cacheItem[V]{
-		value:      value,
-		expiration: expiration,
+	c.items[key] = CacheItem[V]{
+		Value:      value,
+		Expiration: expiration,
 	}
 
 	c.markDirty()
@@ -557,14 +555,14 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	}
 
 	// 检查是否过期
-	if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
+	if item.Expiration > 0 && time.Now().UnixNano() > item.Expiration {
 		var zero V
 		atomic.AddUint64(&c.stats.missCount, 1)
 		return zero, false
 	}
 
 	atomic.AddUint64(&c.stats.hitCount, 1)
-	return item.value, true
+	return item.Value, true
 }
 
 // GetWithTTL 获取缓存项及其剩余生存时间
@@ -581,24 +579,24 @@ func (c *Cache[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 
 	// 检查是否过期
 	now := time.Now().UnixNano()
-	if item.expiration > 0 && now > item.expiration {
+	if item.Expiration > 0 && now > item.Expiration {
 		var zero V
 		atomic.AddUint64(&c.stats.missCount, 1)
 		return zero, 0, false
 	}
 
 	var ttl time.Duration
-	if item.expiration < 0 {
+	if item.Expiration < 0 {
 		ttl = -1 // 永不过期
 	} else {
-		ttl = time.Duration(item.expiration - now)
+		ttl = time.Duration(item.Expiration - now)
 		if ttl < 0 {
 			ttl = 0
 		}
 	}
 
 	atomic.AddUint64(&c.stats.hitCount, 1)
-	return item.value, ttl, true
+	return item.Value, ttl, true
 }
 
 // Delete 删除缓存项
@@ -621,12 +619,12 @@ func (c *Cache[K, V]) ForEach(fn func(key K, value V) bool) {
 	now := time.Now().UnixNano()
 	for k, item := range c.items {
 		// 跳过已过期的项
-		if item.expiration > 0 && now > item.expiration {
+		if item.Expiration > 0 && now > item.Expiration {
 			continue
 		}
 
 		// 执行回调函数，如果返回false则停止遍历
-		if !fn(k, item.value) {
+		if !fn(k, item.Value) {
 			break
 		}
 	}
@@ -637,8 +635,8 @@ func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.items = make(map[K]cacheItem[V])
-	c.listItems = make(map[K][]listItem[V])
+	c.items = make(map[K]CacheItem[V])
+	c.listItems = make(map[K][]ListItem[V])
 	c.expiration = make(map[K]int64)
 
 	c.markDirty()
@@ -670,8 +668,8 @@ func (c *Cache[K, V]) Has(key K) bool {
 	return exists
 }
 
-// Inc 对数值类型进行增加操作
-func (c *Cache[K, V]) Inc(key K, increment any) (any, error) {
+// Increment 对数值类型进行增加操作
+func (c *Cache[K, V]) Increment(key K, increment any) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -680,485 +678,228 @@ func (c *Cache[K, V]) Inc(key K, increment any) (any, error) {
 	// 处理值存在的情况
 	if found {
 		// 检查是否过期
-		if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
-			// 过期的项应该删除
-			delete(c.items, key)
-			atomic.AddUint64(&c.stats.expiredCount, 1)
-			c.markDirty()
-			return nil, errors.New("键已过期")
+		if item.Expiration > 0 && time.Now().UnixNano() > item.Expiration {
+			found = false
 		}
-	} else {
-		// 键不存在
-		return nil, errors.New("键不存在")
 	}
 
-	// 根据increment类型和当前值类型进行处理
-	return c.modifyNumericValue(key, item, increment, true)
-}
-
-// Dec 对数值类型进行减少操作
-func (c *Cache[K, V]) Dec(key K, decrement any) (any, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	item, found := c.items[key]
-
-	// 处理值存在的情况
-	if found {
-		// 检查是否过期
-		if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
-			// 过期的项应该删除
-			delete(c.items, key)
-			atomic.AddUint64(&c.stats.expiredCount, 1)
-			c.markDirty()
-			return nil, errors.New("键已过期")
-		}
-	} else {
-		// 键不存在
-		return nil, errors.New("键不存在")
-	}
-
-	// 根据decrement类型和当前值类型进行处理
-	return c.modifyNumericValue(key, item, decrement, false)
-}
-
-// modifyNumericValue 修改数值，isIncrement为true表示增加，false表示减少
-func (c *Cache[K, V]) modifyNumericValue(key K, item cacheItem[V], delta any, isIncrement bool) (any, error) {
 	var newValue any
-	var operation string
-	if isIncrement {
-		operation = "增加"
-	} else {
-		operation = "减少"
-	}
 
-	// 处理增加/减少的值
-	switch deltaValue := delta.(type) {
+	switch increment := increment.(type) {
 	case int:
-		if !isIncrement {
-			deltaValue = -deltaValue // 如果是减法，将值变为负数
-		}
-		switch current := any(item.value).(type) {
+		switch current := any(item.Value).(type) {
 		case int:
-			newValue = current + deltaValue
+			newValue = current + increment
 		case int8:
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case int16:
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case int32:
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case int64:
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case uint:
-			if !isIncrement && deltaValue > int(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case uint8:
-			if !isIncrement && deltaValue > int(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case uint16:
-			if !isIncrement && deltaValue > int(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case uint32:
-			if !isIncrement && deltaValue > int(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case uint64:
-			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > current {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int(current) + deltaValue
+			newValue = int(current) + increment
 		case float32:
-			newValue = float64(current) + float64(deltaValue)
+			newValue = float64(current) + float64(increment)
 		case float64:
-			newValue = current + float64(deltaValue)
+			newValue = current + float64(increment)
 		default:
-			return nil, errors.New("当前键的值不是数值类型")
+			return nil, errors.New("the value for this key is not a number")
 		}
 	case int64:
-		if !isIncrement {
-			deltaValue = -deltaValue // 如果是减法，将值变为负数
-		}
-		switch current := any(item.value).(type) {
+		switch current := any(item.Value).(type) {
 		case int:
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case int8:
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case int16:
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case int32:
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case int64:
-			newValue = current + deltaValue
+			newValue = current + increment
 		case uint:
-			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case uint8:
-			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case uint16:
-			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case uint32:
-			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > uint64(current) {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case uint64:
-			if !isIncrement && deltaValue > 0 && uint64(deltaValue) > current {
-				return nil, fmt.Errorf("无法%s：结果将小于0", operation)
-			}
-			newValue = int64(current) + deltaValue
+			newValue = int64(current) + increment
 		case float32:
-			newValue = float64(current) + float64(deltaValue)
+			newValue = float64(current) + float64(increment)
 		case float64:
-			newValue = current + float64(deltaValue)
+			newValue = current + float64(increment)
 		default:
-			return nil, errors.New("当前键的值不是数值类型")
+			return nil, errors.New("the value for this key is not a number")
 		}
 	case float64:
-		if !isIncrement {
-			deltaValue = -deltaValue // 如果是减法，将值变为负数
-		}
-		switch current := any(item.value).(type) {
+		switch current := any(item.Value).(type) {
 		case int:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case int8:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case int16:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case int32:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case int64:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case uint:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case uint8:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case uint16:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case uint32:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case uint64:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case float32:
-			newValue = float64(current) + deltaValue
+			newValue = float64(current) + increment
 		case float64:
-			newValue = current + deltaValue
+			newValue = current + increment
 		default:
-			return nil, errors.New("当前键的值不是数值类型")
+			return nil, errors.New("the value for this key is not a number")
 		}
 	default:
-		return nil, errors.New("增减值必须是 int、int64 或 float64 类型")
+		return nil, errors.New("increment value must be int, int64 or float64")
 	}
 
 	// 尝试将结果转换回原始类型
-	var err error
-	item.value, err = c.convertBackToOriginalType(any(item.value), newValue)
-	if err != nil {
-		return nil, err
-	}
-
-	c.items[key] = item
-	c.markDirty()
-
-	return newValue, nil
-}
-
-// convertBackToOriginalType 将计算结果转换回原始类型
-func (c *Cache[K, V]) convertBackToOriginalType(originalValue, newValue any) (V, error) {
-	var result V
-	var ok bool
-
-	switch originalValue.(type) {
+	switch any(item.Value).(type) {
 	case int:
 		switch n := newValue.(type) {
 		case int:
-			result, ok = any(n).(V)
+			item.Value = any(n).(V)
 		case int64:
-			result, ok = any(int(n)).(V)
+			item.Value = any(int(n)).(V)
 		case float64:
-			result, ok = any(int(n)).(V)
+			item.Value = any(int(n)).(V)
 		}
 	case int8:
 		switch n := newValue.(type) {
 		case int:
-			if n > 127 || n < -128 {
-				return result, errors.New("结果超出 int8 范围")
-			}
-			result, ok = any(int8(n)).(V)
+			item.Value = any(int8(n)).(V)
 		case int64:
-			if n > 127 || n < -128 {
-				return result, errors.New("结果超出 int8 范围")
-			}
-			result, ok = any(int8(n)).(V)
+			item.Value = any(int8(n)).(V)
 		case float64:
-			if n > 127 || n < -128 {
-				return result, errors.New("结果超出 int8 范围")
-			}
-			result, ok = any(int8(n)).(V)
+			item.Value = any(int8(n)).(V)
 		}
 	case int16:
 		switch n := newValue.(type) {
 		case int:
-			if n > 32767 || n < -32768 {
-				return result, errors.New("结果超出 int16 范围")
-			}
-			result, ok = any(int16(n)).(V)
+			item.Value = any(int16(n)).(V)
 		case int64:
-			if n > 32767 || n < -32768 {
-				return result, errors.New("结果超出 int16 范围")
-			}
-			result, ok = any(int16(n)).(V)
+			item.Value = any(int16(n)).(V)
 		case float64:
-			if n > 32767 || n < -32768 {
-				return result, errors.New("结果超出 int16 范围")
-			}
-			result, ok = any(int16(n)).(V)
+			item.Value = any(int16(n)).(V)
 		}
 	case int32:
 		switch n := newValue.(type) {
 		case int:
-			if int64(n) > 2147483647 || int64(n) < -2147483648 {
-				return result, errors.New("结果超出 int32 范围")
-			}
-			result, ok = any(int32(n)).(V)
+			item.Value = any(int32(n)).(V)
 		case int64:
-			if n > 2147483647 || n < -2147483648 {
-				return result, errors.New("结果超出 int32 范围")
-			}
-			result, ok = any(int32(n)).(V)
+			item.Value = any(int32(n)).(V)
 		case float64:
-			if n > 2147483647 || n < -2147483648 {
-				return result, errors.New("结果超出 int32 范围")
-			}
-			result, ok = any(int32(n)).(V)
+			item.Value = any(int32(n)).(V)
 		}
 	case int64:
 		switch n := newValue.(type) {
 		case int:
-			result, ok = any(int64(n)).(V)
+			item.Value = any(int64(n)).(V)
 		case int64:
-			result, ok = any(n).(V)
+			item.Value = any(n).(V)
 		case float64:
-			result, ok = any(int64(n)).(V)
+			item.Value = any(int64(n)).(V)
 		}
 	case uint:
 		switch n := newValue.(type) {
 		case int:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			result, ok = any(uint(n)).(V)
+			item.Value = any(uint(n)).(V)
 		case int64:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			result, ok = any(uint(n)).(V)
+			item.Value = any(uint(n)).(V)
 		case float64:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			result, ok = any(uint(n)).(V)
+			item.Value = any(uint(n)).(V)
 		}
 	case uint8:
 		switch n := newValue.(type) {
 		case int:
-			if n < 0 || n > 255 {
-				return result, errors.New("结果超出 uint8 范围")
-			}
-			result, ok = any(uint8(n)).(V)
+			item.Value = any(uint8(n)).(V)
 		case int64:
-			if n < 0 || n > 255 {
-				return result, errors.New("结果超出 uint8 范围")
-			}
-			result, ok = any(uint8(n)).(V)
+			item.Value = any(uint8(n)).(V)
 		case float64:
-			if n < 0 || n > 255 {
-				return result, errors.New("结果超出 uint8 范围")
-			}
-			result, ok = any(uint8(n)).(V)
+			item.Value = any(uint8(n)).(V)
 		}
 	case uint16:
 		switch n := newValue.(type) {
 		case int:
-			if n < 0 || n > 65535 {
-				return result, errors.New("结果超出 uint16 范围")
-			}
-			result, ok = any(uint16(n)).(V)
+			item.Value = any(uint16(n)).(V)
 		case int64:
-			if n < 0 || n > 65535 {
-				return result, errors.New("结果超出 uint16 范围")
-			}
-			result, ok = any(uint16(n)).(V)
+			item.Value = any(uint16(n)).(V)
 		case float64:
-			if n < 0 || n > 65535 {
-				return result, errors.New("结果超出 uint16 范围")
-			}
-			result, ok = any(uint16(n)).(V)
+			item.Value = any(uint16(n)).(V)
 		}
 	case uint32:
 		switch n := newValue.(type) {
 		case int:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			if int64(n) > 4294967295 {
-				return result, errors.New("结果超出 uint32 范围")
-			}
-			result, ok = any(uint32(n)).(V)
+			item.Value = any(uint32(n)).(V)
 		case int64:
-			if n < 0 || n > 4294967295 {
-				return result, errors.New("结果超出 uint32 范围")
-			}
-			result, ok = any(uint32(n)).(V)
+			item.Value = any(uint32(n)).(V)
 		case float64:
-			if n < 0 || n > 4294967295 {
-				return result, errors.New("结果超出 uint32 范围")
-			}
-			result, ok = any(uint32(n)).(V)
+			item.Value = any(uint32(n)).(V)
 		}
 	case uint64:
 		switch n := newValue.(type) {
 		case int:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			result, ok = any(uint64(n)).(V)
+			item.Value = any(uint64(n)).(V)
 		case int64:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			result, ok = any(uint64(n)).(V)
+			item.Value = any(uint64(n)).(V)
 		case float64:
-			if n < 0 {
-				return result, errors.New("结果不能为负数")
-			}
-			result, ok = any(uint64(n)).(V)
+			item.Value = any(uint64(n)).(V)
 		}
 	case float32:
 		switch n := newValue.(type) {
 		case int:
-			result, ok = any(float32(n)).(V)
+			item.Value = any(float32(n)).(V)
 		case int64:
-			result, ok = any(float32(n)).(V)
+			item.Value = any(float32(n)).(V)
 		case float64:
-			if n > float64(3.4e38) || n < float64(-3.4e38) {
-				return result, errors.New("结果超出 float32 范围")
-			}
-			result, ok = any(float32(n)).(V)
+			item.Value = any(float32(n)).(V)
 		}
 	case float64:
 		switch n := newValue.(type) {
 		case int:
-			result, ok = any(float64(n)).(V)
+			item.Value = any(float64(n)).(V)
 		case int64:
-			result, ok = any(float64(n)).(V)
+			item.Value = any(float64(n)).(V)
 		case float64:
-			result, ok = any(n).(V)
+			item.Value = any(n).(V)
 		}
 	default:
 		// 如果不是已知类型，尝试直接赋值
-		result, ok = newValue.(V)
-	}
-
-	if !ok {
-		return result, errors.New("无法将计算结果转换回原始类型")
-	}
-
-	return result, nil
-}
-
-// IncAtomic 原子增加整数值
-func (c *Cache[K, V]) IncAtomic(key K, n int64) (int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	item, found := c.items[key]
-
-	// 处理值存在的情况
-	if found {
-		// 检查是否过期
-		if item.expiration > 0 && time.Now().UnixNano() > item.expiration {
-			// 过期的项应该删除
-			delete(c.items, key)
-			atomic.AddUint64(&c.stats.expiredCount, 1)
-			c.markDirty()
-			return 0, errors.New("键已过期")
+		var ok bool
+		item.Value, ok = newValue.(V)
+		if !ok {
+			return nil, errors.New("cannot convert incremented value back to original type")
 		}
-	} else {
-		// 键不存在，如果启用了自动创建，则创建一个新的键
-		var value int64
-		c.items[key] = cacheItem[V]{
-			value:      any(value).(V),
-			expiration: 0,
-		}
-		c.markDirty()
-		item = c.items[key]
 	}
 
-	// 检查是否可以转换为 int64
-	var current int64
-	switch v := any(item.value).(type) {
-	case int:
-		current = int64(v)
-	case int8:
-		current = int64(v)
-	case int16:
-		current = int64(v)
-	case int32:
-		current = int64(v)
-	case int64:
-		current = v
-	case uint:
-		current = int64(v)
-	case uint8:
-		current = int64(v)
-	case uint16:
-		current = int64(v)
-	case uint32:
-		current = int64(v)
-	case uint64:
-		if v > 9223372036854775807 {
-			return 0, errors.New("值超出 int64 范围")
-		}
-		current = int64(v)
-	default:
-		return 0, errors.New("值不是整数类型")
-	}
-
-	// 执行原子增加
-	newValue := current + n
-
-	// 将结果转换回原始类型
-	convertedItem, err := c.convertBackToOriginalType(any(item.value), newValue)
-	if err != nil {
-		return 0, err
-	}
-
-	item.value = convertedItem
 	c.items[key] = item
 	c.markDirty()
 
 	return newValue, nil
-}
-
-// DecAtomic 原子减少整数值
-func (c *Cache[K, V]) DecAtomic(key K, n int64) (int64, error) {
-	// 调用 IncrementAtomic 并取反 n
-	return c.IncAtomic(key, -n)
 }
 
 //------------------------------------------------------------------------------
@@ -1196,23 +937,22 @@ func (c *Cache[K, V]) SetList(key K, duration ...time.Duration) {
 
 // LPush 将一个或多个值插入到列表头部
 func (c *Cache[K, V]) LPush(key K, values ...V) int {
-	if len(values) == 0 {
-		return 0
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 检查列表是否存在，不存在则创建
-	list, exists := c.listItems[key]
-	if !exists {
-		list = make([]listItem[V], 0, len(values))
+	if c.isExpired(key) {
+		delete(c.listItems, key)
+		delete(c.expiration, key)
 	}
 
-	// 创建新的列表项，并放在列表前面
-	newList := make([]listItem[V], len(values))
+	list, exists := c.listItems[key]
+	if !exists {
+		list = make([]ListItem[V], 0, len(values))
+	}
+
+	newList := make([]ListItem[V], len(values))
 	for i, v := range values {
-		newList[i] = listItem[V]{value: v}
+		newList[i] = ListItem[V]{Value: v}
 	}
 
 	c.listItems[key] = append(newList, list...)
@@ -1223,121 +963,148 @@ func (c *Cache[K, V]) LPush(key K, values ...V) int {
 
 // RPush 将一个或多个值插入到列表尾部
 func (c *Cache[K, V]) RPush(key K, values ...V) int {
-	if len(values) == 0 {
-		return 0
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 检查列表是否存在，不存在则创建
+	if c.isExpired(key) {
+		delete(c.listItems, key)
+		delete(c.expiration, key)
+	}
+
 	list, exists := c.listItems[key]
 	if !exists {
-		list = make([]listItem[V], 0, len(values))
+		list = make([]ListItem[V], 0, len(values))
 	}
 
 	for _, v := range values {
-		list = append(list, listItem[V]{value: v})
+		list = append(list, ListItem[V]{Value: v})
 	}
 
 	c.listItems[key] = list
 	c.markDirty()
 
-	return len(list)
+	return len(c.listItems[key])
 }
 
-// LPop 移除并返回列表的第一个元素
+// LPop 移除并返回列表头部的元素
 func (c *Cache[K, V]) LPop(key K) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	list, exists := c.listItems[key]
-	if !exists || len(list) == 0 {
-		var zero V
+	var zero V
+
+	if c.isExpired(key) {
+		delete(c.listItems, key)
+		delete(c.expiration, key)
+		atomic.AddUint64(&c.stats.missCount, 1)
 		return zero, false
 	}
 
-	// 获取第一个元素
-	result := list[0].value
+	list, exists := c.listItems[key]
+	if !exists || len(list) == 0 {
+		atomic.AddUint64(&c.stats.missCount, 1)
+		return zero, false
+	}
 
-	// 移除第一个元素
-	if len(list) > 1 {
-		c.listItems[key] = list[1:]
-	} else {
+	value := list[0].Value
+	c.listItems[key] = list[1:]
+	c.markDirty()
+
+	// 如果列表为空，删除该键
+	if len(c.listItems[key]) == 0 {
 		delete(c.listItems, key)
 		delete(c.expiration, key)
 	}
 
-	c.markDirty()
-	return result, true
+	atomic.AddUint64(&c.stats.hitCount, 1)
+	return value, true
 }
 
-// RPop 移除并返回列表的最后一个元素
+// RPop 移除并返回列表尾部的元素
 func (c *Cache[K, V]) RPop(key K) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	list, exists := c.listItems[key]
-	if !exists || len(list) == 0 {
-		var zero V
+	var zero V
+
+	if c.isExpired(key) {
+		delete(c.listItems, key)
+		delete(c.expiration, key)
+		atomic.AddUint64(&c.stats.missCount, 1)
 		return zero, false
 	}
 
-	// 获取最后一个元素
-	lastIndex := len(list) - 1
-	result := list[lastIndex].value
+	list, exists := c.listItems[key]
+	if !exists || len(list) == 0 {
+		atomic.AddUint64(&c.stats.missCount, 1)
+		return zero, false
+	}
 
-	// 移除最后一个元素
-	if lastIndex > 0 {
-		c.listItems[key] = list[:lastIndex]
-	} else {
+	lastIndex := len(list) - 1
+	value := list[lastIndex].Value
+	c.listItems[key] = list[:lastIndex]
+	c.markDirty()
+
+	// 如果列表为空，删除该键
+	if len(c.listItems[key]) == 0 {
 		delete(c.listItems, key)
 		delete(c.expiration, key)
 	}
 
-	c.markDirty()
-	return result, true
+	atomic.AddUint64(&c.stats.hitCount, 1)
+	return value, true
 }
 
-// LIndex 返回列表中指定位置的元素
+// LIndex 通过索引获取列表中的元素
 func (c *Cache[K, V]) LIndex(key K, index int) (V, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	var zero V
+
+	if c.isExpired(key) {
+		atomic.AddUint64(&c.stats.missCount, 1)
+		return zero, false
+	}
+
 	list, exists := c.listItems[key]
 	if !exists {
-		var zero V
+		atomic.AddUint64(&c.stats.missCount, 1)
 		return zero, false
 	}
 
-	// 处理负索引，转为从尾部开始的索引
+	length := len(list)
 	if index < 0 {
-		index = len(list) + index
+		// 处理负索引，如-1表示最后一个元素
+		index = length + index
 	}
 
-	// 检查索引是否在范围内
-	if index < 0 || index >= len(list) {
-		var zero V
+	if index < 0 || index >= length {
+		atomic.AddUint64(&c.stats.missCount, 1)
 		return zero, false
 	}
 
-	return list[index].value, true
+	atomic.AddUint64(&c.stats.hitCount, 1)
+	return list[index].Value, true
 }
 
-// LRange 返回列表中指定范围内的元素
+// LRange 获取列表指定范围内的元素
 func (c *Cache[K, V]) LRange(key K, start, stop int) []V {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	if c.isExpired(key) {
+		atomic.AddUint64(&c.stats.missCount, 1)
+		return []V{}
+	}
+
 	list, exists := c.listItems[key]
 	if !exists {
+		atomic.AddUint64(&c.stats.missCount, 1)
 		return []V{}
 	}
 
 	length := len(list)
-	if length == 0 {
-		return []V{}
-	}
 
 	// 处理负索引
 	if start < 0 {
@@ -1352,7 +1119,7 @@ func (c *Cache[K, V]) LRange(key K, start, stop int) []V {
 	}
 
 	// 确保索引在有效范围内
-	if start >= length {
+	if start >= length || start > stop {
 		return []V{}
 	}
 
@@ -1360,69 +1127,94 @@ func (c *Cache[K, V]) LRange(key K, start, stop int) []V {
 		stop = length - 1
 	}
 
-	// 如果stop小于start，则返回空列表
-	if stop < start {
-		return []V{}
-	}
-
-	// 构建结果列表
-	result := make([]V, stop-start+1)
+	result := make([]V, 0, stop-start+1)
 	for i := start; i <= stop; i++ {
-		result[i-start] = list[i].value
+		result = append(result, list[i].Value)
 	}
 
+	atomic.AddUint64(&c.stats.hitCount, 1)
 	return result
 }
 
-// LRem 从列表中移除元素
-func (c *Cache[K, V]) LRem(key K, count int, value V, equals func(a, b V) bool) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// LLen 获取列表长度
+func (c *Cache[K, V]) LLen(key K) int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.isExpired(key) {
+		return 0
+	}
 
 	list, exists := c.listItems[key]
 	if !exists {
 		return 0
 	}
 
-	if len(list) == 0 {
+	return len(list)
+}
+
+// LRem 移除列表中与参数value相等的元素
+// count > 0: 从头往尾移除count个值为value的元素
+// count < 0: 从尾往头移除count个值为value的元素
+// count = 0: 移除所有值为value的元素
+func (c *Cache[K, V]) LRem(key K, count int, value V, equals func(a, b V) bool) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.isExpired(key) {
+		delete(c.listItems, key)
+		delete(c.expiration, key)
+		return 0
+	}
+
+	list, exists := c.listItems[key]
+	if !exists {
 		return 0
 	}
 
 	if count == 0 {
 		// 移除所有匹配的元素
-		newList := make([]listItem[V], 0, len(list))
+		newList := make([]ListItem[V], 0, len(list))
 		removed := 0
 
 		for _, item := range list {
-			if !equals(item.value, value) {
+			if !equals(item.Value, value) {
 				newList = append(newList, item)
 			} else {
 				removed++
 			}
 		}
 
-		if removed > 0 {
-			c.listItems[key] = newList
-			c.markDirty()
+		c.listItems[key] = newList
+		c.markDirty()
+
+		// 如果列表为空，删除该键
+		if len(c.listItems[key]) == 0 {
+			delete(c.listItems, key)
+			delete(c.expiration, key)
 		}
 
 		return removed
 	} else if count > 0 {
 		// 从头往尾移除
-		newList := make([]listItem[V], 0, len(list))
+		newList := make([]ListItem[V], 0, len(list))
 		removed := 0
 
 		for _, item := range list {
-			if equals(item.value, value) && removed < count {
+			if equals(item.Value, value) && removed < count {
 				removed++
 			} else {
 				newList = append(newList, item)
 			}
 		}
 
-		if removed > 0 {
-			c.listItems[key] = newList
-			c.markDirty()
+		c.listItems[key] = newList
+		c.markDirty()
+
+		// 如果列表为空，删除该键
+		if len(c.listItems[key]) == 0 {
+			delete(c.listItems, key)
+			delete(c.expiration, key)
 		}
 
 		return removed
@@ -1430,59 +1222,77 @@ func (c *Cache[K, V]) LRem(key K, count int, value V, equals func(a, b V) bool) 
 		// 从尾往头移除
 		count = -count
 		length := len(list)
-		newList := make([]listItem[V], 0, length)
+		newList := make([]ListItem[V], 0, length)
 		removed := 0
 
-		// 从后向前遍历
 		for i := length - 1; i >= 0; i-- {
-			if equals(list[i].value, value) && removed < count {
+			if equals(list[i].Value, value) && removed < count {
 				removed++
 			} else {
-				newList = append([]listItem[V]{list[i]}, newList...)
+				newList = append([]ListItem[V]{list[i]}, newList...)
 			}
 		}
 
-		if removed > 0 {
-			c.listItems[key] = newList
-			c.markDirty()
+		c.listItems[key] = newList
+		c.markDirty()
+
+		// 如果列表为空，删除该键
+		if len(c.listItems[key]) == 0 {
+			delete(c.listItems, key)
+			delete(c.expiration, key)
 		}
 
 		return removed
 	}
 }
 
-// RPoplPush 移除列表的最后一个元素，并将该元素添加到另一个列表的头部
+// RPoplPush 移除列表的最后一个元素，并将该元素添加到另一个列表的头部并返回它
 func (c *Cache[K, V]) RPoplPush(source K, destination K) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var zero V
+
+	// 检查源列表是否过期
+	if c.isExpired(source) {
+		delete(c.listItems, source)
+		delete(c.expiration, source)
+		return zero, false
+	}
+
 	// 获取源列表
 	sourceList, exists := c.listItems[source]
 	if !exists || len(sourceList) == 0 {
-		var zero V
 		return zero, false
 	}
 
 	// 获取最后一个元素
 	lastIndex := len(sourceList) - 1
-	value := sourceList[lastIndex].value
+	value := sourceList[lastIndex].Value
 
 	// 从源列表中移除
-	if lastIndex > 0 {
-		c.listItems[source] = sourceList[:lastIndex]
-	} else {
+	c.listItems[source] = sourceList[:lastIndex]
+
+	// 如果源列表为空，删除该键
+	if len(c.listItems[source]) == 0 {
 		delete(c.listItems, source)
 		delete(c.expiration, source)
 	}
 
-	// 添加到目标列表
+	// 检查目标列表是否过期
+	if c.isExpired(destination) {
+		delete(c.listItems, destination)
+		delete(c.expiration, destination)
+	}
+
+	// 获取目标列表
 	destList, exists := c.listItems[destination]
 	if !exists {
-		destList = make([]listItem[V], 0)
+		destList = make([]ListItem[V], 0)
 	}
 
 	// 将元素添加到目标列表的头部
-	c.listItems[destination] = append([]listItem[V]{{value: value}}, destList...)
+	c.listItems[destination] = append([]ListItem[V]{{Value: value}}, destList...)
 	c.markDirty()
 
 	return value, true
@@ -1621,7 +1431,7 @@ func (c *Cache[K, V]) ForEachList(fn func(key K, list []V) bool) {
 		// 转换为值列表
 		values := make([]V, len(items))
 		for i, item := range items {
-			values[i] = item.value
+			values[i] = item.Value
 		}
 
 		// 执行回调函数，如果返回false则停止遍历
@@ -1657,7 +1467,7 @@ func (c *Cache[K, V]) LSet(key K, index int, value V) bool {
 		return false
 	}
 
-	list[index] = listItem[V]{value: value}
+	list[index] = ListItem[V]{Value: value}
 	c.markDirty()
 	return true
 }
@@ -1681,19 +1491,19 @@ func (c *Cache[K, V]) LInsert(key K, before bool, pivot V, value V, equals func(
 	}
 
 	for i, item := range list {
-		if equals(item.value, pivot) {
+		if equals(item.Value, pivot) {
 			if before {
 				// 在pivot之前插入
-				newList := make([]listItem[V], len(list)+1)
+				newList := make([]ListItem[V], len(list)+1)
 				copy(newList, list[:i])
-				newList[i] = listItem[V]{value: value}
+				newList[i] = ListItem[V]{Value: value}
 				copy(newList[i+1:], list[i:])
 				c.listItems[key] = newList
 			} else {
 				// 在pivot之后插入
-				newList := make([]listItem[V], len(list)+1)
+				newList := make([]ListItem[V], len(list)+1)
 				copy(newList, list[:i+1])
-				newList[i+1] = listItem[V]{value: value}
+				newList[i+1] = ListItem[V]{Value: value}
 				copy(newList[i+2:], list[i+1:])
 				c.listItems[key] = newList
 			}
@@ -1768,12 +1578,12 @@ func (c *Cache[K, V]) LTrim(key K, start, stop int) bool {
 // Transaction 表示一个缓存事务
 type Transaction[K comparable, V any] struct {
 	cache           *Cache[K, V]
-	items           map[K]cacheItem[V]
-	listItems       map[K][]listItem[V]
+	items           map[K]CacheItem[V]
+	listItems       map[K][]ListItem[V]
 	expiration      map[K]int64
-	itemsToAdd      map[K]cacheItem[V]
+	itemsToAdd      map[K]CacheItem[V]
 	itemsToRemove   map[K]struct{}
-	listsToAdd      map[K][]listItem[V]
+	listsToAdd      map[K][]ListItem[V]
 	listsToRemove   map[K]struct{}
 	expirationToSet map[K]int64
 }
@@ -1786,12 +1596,12 @@ func (c *Cache[K, V]) BeginTransaction() *Transaction[K, V] {
 	// 创建事务对象并复制当前数据快照
 	t := &Transaction[K, V]{
 		cache:           c,
-		items:           make(map[K]cacheItem[V]),
-		listItems:       make(map[K][]listItem[V]),
+		items:           make(map[K]CacheItem[V]),
+		listItems:       make(map[K][]ListItem[V]),
 		expiration:      make(map[K]int64),
-		itemsToAdd:      make(map[K]cacheItem[V]),
+		itemsToAdd:      make(map[K]CacheItem[V]),
 		itemsToRemove:   make(map[K]struct{}),
-		listsToAdd:      make(map[K][]listItem[V]),
+		listsToAdd:      make(map[K][]ListItem[V]),
 		listsToRemove:   make(map[K]struct{}),
 		expirationToSet: make(map[K]int64),
 	}
@@ -1803,7 +1613,7 @@ func (c *Cache[K, V]) BeginTransaction() *Transaction[K, V] {
 
 	// 复制列表缓存项
 	for k, v := range c.listItems {
-		listCopy := make([]listItem[V], len(v))
+		listCopy := make([]ListItem[V], len(v))
 		copy(listCopy, v)
 		t.listItems[k] = listCopy
 	}
@@ -1830,9 +1640,9 @@ func (t *Transaction[K, V]) Set(key K, value V, duration time.Duration) {
 		expiration = -1
 	}
 
-	t.itemsToAdd[key] = cacheItem[V]{
-		value:      value,
-		expiration: expiration,
+	t.itemsToAdd[key] = CacheItem[V]{
+		Value:      value,
+		Expiration: expiration,
 	}
 	delete(t.itemsToRemove, key)
 }
@@ -1847,7 +1657,7 @@ func (t *Transaction[K, V]) Delete(key K) {
 func (t *Transaction[K, V]) LPush(key K, values ...V) {
 	list, exists := t.listItems[key]
 	if !exists {
-		list = make([]listItem[V], 0, len(values))
+		list = make([]ListItem[V], 0, len(values))
 		// 检查是否在待删除列表中
 		if _, toRemove := t.listsToRemove[key]; toRemove {
 			delete(t.listsToRemove, key)
@@ -1857,9 +1667,9 @@ func (t *Transaction[K, V]) LPush(key K, values ...V) {
 		list = toAdd
 	}
 
-	newList := make([]listItem[V], len(values))
+	newList := make([]ListItem[V], len(values))
 	for i, v := range values {
-		newList[i] = listItem[V]{value: v}
+		newList[i] = ListItem[V]{Value: v}
 	}
 
 	t.listsToAdd[key] = append(newList, list...)
@@ -1924,9 +1734,9 @@ func (t *Transaction[K, V]) Commit() {
 // Rollback 回滚事务（什么也不做，因为事务只在Commit时才会应用）
 func (t *Transaction[K, V]) Rollback() {
 	// 清空所有事务操作
-	t.itemsToAdd = make(map[K]cacheItem[V])
+	t.itemsToAdd = make(map[K]CacheItem[V])
 	t.itemsToRemove = make(map[K]struct{})
-	t.listsToAdd = make(map[K][]listItem[V])
+	t.listsToAdd = make(map[K][]ListItem[V])
 	t.listsToRemove = make(map[K]struct{})
 	t.expirationToSet = make(map[K]int64)
 }

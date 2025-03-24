@@ -3,7 +3,9 @@ package gin
 import (
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/darkit/gin/cache"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,7 +29,8 @@ const (
 // Router 路由管理器
 type Router struct {
 	engine *gin.Engine
-	groups map[string]*RouterGroup // 路由组映射表
+	groups map[string]*RouterGroup   // 路由组映射表
+	cache  *cache.Cache[string, any] // 全局缓存实例
 }
 
 // RouterGroup 路由组
@@ -267,8 +270,8 @@ func wrapHandler(h HandlerFunc) gin.HandlerFunc {
 		if c.IsAborted() {
 			return
 		}
-		// 创建我们自己的上下文
-		ctx := &Context{Context: c}
+		// 使用newContext创建上下文
+		ctx := newContext(c)
 
 		// 调用处理函数
 		h(ctx)
@@ -293,6 +296,44 @@ func (r *Router) UseGin(middleware ...gin.HandlerFunc) {
 		}
 	}
 	r.engine.Use(handlers...)
+}
+
+// WithCache 返回一个缓存初始化中间件
+// 该中间件会将指定缓存实例注入到每个请求的Context中
+func (r *Router) WithCache(cache *cache.Cache[string, any]) HandlerFunc {
+	return func(c *Context) {
+		// 将缓存实例注入到Context中
+		c.setGlobalCache(cache)
+		// 继续处理请求
+		c.Next()
+	}
+}
+
+// SetGlobalCacheMiddleware 返回一个缓存初始化中间件，会自动创建缓存实例
+//
+// 参数:
+//   - defaultExpiration: 缓存项默认过期时间
+//   - cleanupInterval: 清理过期项的时间间隔
+func (r *Router) SetGlobalCacheMiddleware(defaultExpiration, cleanupInterval time.Duration) HandlerFunc {
+	return r.WithCache(cache.NewCache[string, any](defaultExpiration, cleanupInterval))
+}
+
+// SetPersistCacheMiddleware 返回一个带持久化功能的缓存初始化中间件
+//
+// 参数:
+//   - defaultExpiration: 缓存项默认过期时间
+//   - cleanupInterval: 清理过期项的时间间隔
+//   - persistPath: 持久化文件路径
+//   - autoPersistInterval: 自动持久化时间间隔
+func (r *Router) SetPersistCacheMiddleware(defaultExpiration, cleanupInterval time.Duration, persistPath string, autoPersistInterval time.Duration) HandlerFunc {
+	// 创建带持久化功能的全局缓存实例
+	cache := cache.NewCache[string, any](defaultExpiration, cleanupInterval).WithPersistence(persistPath, autoPersistInterval)
+
+	// 启用自动持久化
+	cache.EnableAutoPersist()
+
+	// 返回中间件函数
+	return r.WithCache(cache)
 }
 
 // Run 启动服务器

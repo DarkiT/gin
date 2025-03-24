@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
@@ -19,7 +20,6 @@ var content embed.FS
 // 定义全局 SSE Hub 和 缓存
 var (
 	hub       *gin.SSEHub
-	cache     *gin.Cache[string, any]
 	cacheMap  = make(map[string]interface{})
 	ginEngine *gin.Router // 保存gin引擎的引用
 )
@@ -85,13 +85,10 @@ func main() {
 	r := gin.Default()
 	ginEngine = r // 保存gin引擎的引用
 
-	// 初始化缓存系统
-	cache = gin.SetGlobalCacheWithPersistence(
-		10*time.Minute, // 默认过期时间
-		30*time.Second, // 清理间隔
-		CacheSavePath,  // 持久化文件路径
-		5*time.Minute,  // 自动保存间隔
-	)
+	// 初始化缓存系统，初始化时默认缓存 (2小时过期，10分钟清理)
+	// r.SetCacheConfig(time.Hour, time.Minute*10)
+	// r.EnablePersistCache(CacheSavePath, time.Minute*5)
+	r.Use(r.SetPersistCacheMiddleware(time.Hour, time.Minute*10, CacheSavePath, time.Minute*5))
 
 	// 创建 SSE Hub，设置历史记录大小为 20
 	hub = r.NewSSEHub(20)
@@ -236,12 +233,6 @@ func setupRoutes(r *gin.Router) {
 
 	// SSE演示页面
 	r.GET("/sse", handleSSEPage)
-
-	// 静态文件服务（如果需要）
-	// 使用标准库http.FileServer提供静态文件服务
-	r.GET("/static/*filepath", func(c *gin.Context) {
-		// TODO: 实现静态文件服务
-	})
 
 	// 模拟用户相关事件
 	go simulateUserEvents()
@@ -604,37 +595,28 @@ func getMapKeys(m map[string]interface{}) []string {
 
 // handleCacheList 列表缓存操作演示
 func handleCacheList(c *gin.Context) {
-	// 使用全局缓存实例而不是从上下文获取
-	if cache == nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code": 500,
-			"msg":  "缓存系统未初始化或不可用",
-		})
-		return
-	}
-
 	// 使用全局缓存变量操作列表
 	cacheKeyTasks := "tasks"
 
 	// 创建一个列表缓存，设置5分钟过期
-	cache.SetList(cacheKeyTasks, 5*time.Minute)
+	c.GetCache().SetList(cacheKeyTasks, 5*time.Minute)
 
 	// 添加任务到列表
-	cache.LPush(cacheKeyTasks, "任务1", "任务2", "任务3")
-	cache.RPush(cacheKeyTasks, "任务4", "任务5")
+	c.GetCache().LPush(cacheKeyTasks, "任务1", "任务2", "任务3")
+	c.GetCache().RPush(cacheKeyTasks, "任务4", "任务5")
 
 	// 获取所有任务
-	allTasks := cache.LRange(cacheKeyTasks, 0, -1)
+	allTasks := c.GetCache().LRange(cacheKeyTasks, 0, -1)
 
 	// 弹出第一个和最后一个任务
-	firstTask, _ := cache.LPop(cacheKeyTasks)
-	lastTask, _ := cache.RPop(cacheKeyTasks)
+	firstTask, _ := c.GetCache().LPop(cacheKeyTasks)
+	lastTask, _ := c.GetCache().RPop(cacheKeyTasks)
 
 	// 获取中间的任务
-	middleTask, _ := cache.LIndex(cacheKeyTasks, 1)
+	middleTask, _ := c.GetCache().LIndex(cacheKeyTasks, 1)
 
 	// 剩余的任务
-	remainingTasks := cache.LRange(cacheKeyTasks, 0, -1)
+	remainingTasks := c.GetCache().LRange(cacheKeyTasks, 0, -1)
 
 	c.Success(gin.H{
 		"all_tasks":       allTasks,
@@ -647,20 +629,8 @@ func handleCacheList(c *gin.Context) {
 
 // handleCacheStats 获取缓存统计信息
 func handleCacheStats(c *gin.Context) {
-	// 使用全局缓存实例而不是从上下文获取
-	if cache == nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code": 500,
-			"msg":  "缓存系统未初始化或不可用",
-			"data": gin.H{
-				"stats": nil,
-			},
-		})
-		return
-	}
-
 	// 缓存实例有效，获取统计信息
-	stats := cache.GetStats()
+	stats := c.GetCache().GetStats()
 
 	c.Success(gin.H{
 		"stats": stats,
@@ -912,7 +882,8 @@ func handleFormValidate(c *gin.Context) {
 	// 验证请求参数
 	validate := validator.New()
 	if err := validate.Struct(req); err != nil {
-		validationErrors := err.(validator.ValidationErrors)
+		var validationErrors validator.ValidationErrors
+		errors.As(err, &validationErrors)
 		errorMessages := make([]string, 0)
 		for _, e := range validationErrors {
 			errorMessages = append(errorMessages, fmt.Sprintf("字段 '%s' 验证失败: %s", e.Field(), e.Tag()))
@@ -1057,9 +1028,6 @@ func handleSecurity(c *gin.Context) {
 
 	// 设置X-Frame-Options以防止点击劫持
 	c.SetXFrameOptions("DENY")
-
-	// 禁止缓存
-	c.NoCache()
 
 	c.HTML(200, "security.html", gin.H{
 		"title": "安全增强示例",
@@ -1208,16 +1176,12 @@ func handleAPIDemo(c *gin.Context) {
 		return
 	}
 
-	username, _ := c.Get("username")
-	usernameStr, ok := username.(string)
-	if !ok {
-		usernameStr = "未知用户"
-	}
+	username := c.GetString("username")
 
 	c.HTML(200, "api.html", gin.H{
 		"title":    "API演示",
 		"user_id":  userID,
-		"username": usernameStr,
+		"username": username,
 		"endpoints": []gin.H{
 			{"path": "/api/user/profile", "method": "GET", "desc": "获取用户资料"},
 			{"path": "/api/user/update", "method": "POST", "desc": "更新用户资料"},

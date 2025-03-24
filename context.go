@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darkit/gin/cache"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 )
@@ -73,7 +74,7 @@ var (
 type Context struct {
 	*gin.Context
 	hub   *SSEHub
-	cache *Cache[string, any] // 添加缓存字段
+	cache *cache.Cache[string, any] // 添加缓存字段
 }
 
 // 定义统一的响应结构
@@ -451,7 +452,7 @@ func (c *Context) RootDomain() string {
 	return root
 }
 
-// 检查是否包含特殊后缀（改为私有方法）
+// 检查是否包含特殊后缀
 func (c *Context) containsSpecialSuffix(suffix string) bool {
 	for _, specialSuffix := range domainSpecialSuffix {
 		if suffix == specialSuffix {
@@ -638,13 +639,13 @@ func (c *Context) BuildUrl(path string) *urlBuilder {
 	}
 }
 
-// urlBuilder 结构体用于构建 URL（改为私有）
+// urlBuilder 结构体用于构建 URL
 type urlBuilder struct {
 	domain, path, ext, scheme string
 	params                    H
 }
 
-// Set 设置 URL 的Query参数（改为私有方法）
+// Set 设置 URL 的Query参数
 func (ub *urlBuilder) Set(query string, value any) *urlBuilder {
 	if ub.params == nil {
 		ub.params = H{}
@@ -653,25 +654,25 @@ func (ub *urlBuilder) Set(query string, value any) *urlBuilder {
 	return ub
 }
 
-// Scheme 设置 URL 的访问协议（改为私有方法）
+// Scheme 设置 URL 的访问协议
 func (ub *urlBuilder) Scheme(scheme string) *urlBuilder {
 	ub.scheme = scheme
 	return ub
 }
 
-// Domain 设置是否使用域名（改为私有方法）
+// Domain 设置是否使用域名
 func (ub *urlBuilder) Domain(domain string) *urlBuilder {
 	ub.domain = domain
 	return ub
 }
 
-// Suffix 设置 URL 的后缀（改为私有方法）
+// Suffix 设置 URL 的后缀
 func (ub *urlBuilder) Suffix(suffix string) *urlBuilder {
 	ub.ext = suffix
 	return ub
 }
 
-// Builder 生成最终的 URL（改为私有方法）
+// Builder 生成最终的 URL
 func (ub *urlBuilder) Builder() string {
 	u := &url.URL{}
 
@@ -778,13 +779,13 @@ const (
 	JWTClaimJti = "jti" // JWT ID
 )
 
-// jwtUtil JWT工具类（改为私有）
+// jwtUtil JWT工具类
 type jwtUtil struct {
 	SecretKey []byte // 密钥
 	Alg       string // 算法
 }
 
-// 创建默认的JWT工具（改为私有）
+// 创建默认的JWT工具
 func newJWTUtil(secretKey string) *jwtUtil {
 	return &jwtUtil{
 		SecretKey: []byte(secretKey),
@@ -792,22 +793,14 @@ func newJWTUtil(secretKey string) *jwtUtil {
 	}
 }
 
-// 创建JWT工具并指定算法（改为私有）
-func newJWTUtilWithAlg(secretKey string, alg string) *jwtUtil {
-	return &jwtUtil{
-		SecretKey: []byte(secretKey),
-		Alg:       alg,
-	}
-}
-
-// jwtHeader JWT头部（改为私有）
+// jwtHeader JWT头部
 type jwtHeader struct {
 	Alg string `json:"alg"` // 算法
 	Typ string `json:"typ"` // 类型
 }
 
-// JWTPayload JWT载荷（保留公开因为它是API的一部分）
-type JWTPayload map[string]interface{}
+// JWTPayload JWT载荷
+type JWTPayload = H
 
 // SetIssuer 设置JWT标准声明
 func (p JWTPayload) SetIssuer(issuer string) JWTPayload {
@@ -845,7 +838,63 @@ func (p JWTPayload) SetJWTID(jwtID string) JWTPayload {
 	return p
 }
 
-// 生成随机JWT ID（改为私有）
+// GetIssuer 获取JWT签发者
+func (p JWTPayload) GetIssuer() string {
+	if iss, ok := p[JWTClaimIss].(string); ok {
+		return iss
+	}
+	return ""
+}
+
+// GetSubject 获取JWT主题
+func (p JWTPayload) GetSubject() string {
+	if sub, ok := p[JWTClaimSub].(string); ok {
+		return sub
+	}
+	return ""
+}
+
+// GetAudience 获取JWT受众
+func (p JWTPayload) GetAudience() string {
+	if aud, ok := p[JWTClaimAud].(string); ok {
+		return aud
+	}
+	return ""
+}
+
+// GetExpiresAt 获取JWT过期时间
+func (p JWTPayload) GetExpiresAt() time.Time {
+	if exp, ok := p[JWTClaimExp].(float64); ok {
+		return time.Unix(int64(exp), 0)
+	}
+	return time.Time{}
+}
+
+// GetNotBefore 获取JWT生效时间
+func (p JWTPayload) GetNotBefore() time.Time {
+	if nbf, ok := p[JWTClaimNbf].(float64); ok {
+		return time.Unix(int64(nbf), 0)
+	}
+	return time.Time{}
+}
+
+// GetIssuedAt 获取JWT签发时间
+func (p JWTPayload) GetIssuedAt() time.Time {
+	if iat, ok := p[JWTClaimIat].(float64); ok {
+		return time.Unix(int64(iat), 0)
+	}
+	return time.Time{}
+}
+
+// GetJWTID 获取JWT ID
+func (p JWTPayload) GetJWTID() string {
+	if jti, ok := p[JWTClaimJti].(string); ok {
+		return jti
+	}
+	return ""
+}
+
+// 生成随机JWT ID
 func generateJWTID() string {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
@@ -856,7 +905,7 @@ func generateJWTID() string {
 	return hex.EncodeToString(b)
 }
 
-// 生成JWT令牌（改为私有方法）
+// 生成JWT令牌
 func (j *jwtUtil) generateToken(payload JWTPayload) (string, error) {
 	// 创建头部
 	header := jwtHeader{
@@ -898,7 +947,7 @@ func (j *jwtUtil) generateToken(payload JWTPayload) (string, error) {
 	return token, nil
 }
 
-// 验证JWT令牌并返回载荷（改为私有方法）
+// 验证JWT令牌并返回载荷
 func (j *jwtUtil) validateToken(token string) (JWTPayload, error) {
 	// 解析令牌
 	parts := strings.Split(token, ".")
@@ -949,7 +998,7 @@ func (j *jwtUtil) validateToken(token string) (JWTPayload, error) {
 	return payload, nil
 }
 
-// 签名（改为私有方法）
+// 签名
 func (j *jwtUtil) sign(data string) []byte {
 	var h hash.Hash
 
@@ -966,12 +1015,12 @@ func (j *jwtUtil) sign(data string) []byte {
 	return h.Sum(nil)
 }
 
-// Base64URL编码（改为私有函数）
+// Base64URL编码H
 func base64URLEncode(data []byte) string {
 	return strings.TrimRight(base64.URLEncoding.EncodeToString(data), "=")
 }
 
-// Base64URL解码（改为私有函数）
+// Base64URL解码H
 func base64URLDecode(s string) ([]byte, error) {
 	// 添加填充
 	if m := len(s) % 4; m != 0 {
@@ -990,9 +1039,13 @@ func (c *Context) GenerateJWT(secretKey string, payload JWTPayload) (string, err
 }
 
 // ValidateJWT 验证JWT令牌
-func (c *Context) ValidateJWT(secretKey string, token string) (JWTPayload, error) {
+func (c *Context) ValidateJWT(secretKey string, token ...string) (JWTPayload, error) {
+	tk := c.GetToken()
+	if len(token) > 0 {
+		tk = token[0]
+	}
 	jwt := newJWTUtil(secretKey)
-	return jwt.validateToken(token)
+	return jwt.validateToken(tk)
 }
 
 // ParseJWTPayload 解析JWT载荷（不验证签名）
@@ -1036,11 +1089,10 @@ func (c *Context) RequireJWT(secretKey string) (JWTPayload, bool) {
 }
 
 // CreateJWTSession 使用JWT创建用户会话
-func (c *Context) CreateJWTSession(secretKey string, userID string, expiration time.Duration, extraClaims ...map[string]interface{}) (string, error) {
+func (c *Context) CreateJWTSession(secretKey string, expiration time.Duration, extraClaims ...H) (string, error) {
 	// 创建标准载荷
 	now := time.Now()
 	payload := JWTPayload{
-		JWTClaimSub: userID,
 		JWTClaimIat: now.Unix(),
 		JWTClaimNbf: now.Unix(),
 		JWTClaimExp: now.Add(expiration).Unix(),
@@ -1110,22 +1162,6 @@ func (c *Context) RefreshJWTSession(secretKey string, expiration time.Duration) 
 	c.SetJWT(newToken, maxAge)
 
 	return newToken, nil
-}
-
-// 增加缓存控制方法
-
-// NoCache 设置禁止缓存的Header
-func (c *Context) NoCache() {
-	c.Header("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate, value")
-	c.Header("Expires", "Thu, 01 Jan 1970 00:00:00 GMT")
-	c.Header("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
-	c.Header("Pragma", "no-cache")
-}
-
-// Cache 设置缓存的Header
-func (c *Context) Cache(seconds int) {
-	c.Header("Cache-Control", fmt.Sprintf("max-age=%d, public", seconds))
-	c.Header("Expires", time.Now().Add(time.Duration(seconds)*time.Second).UTC().Format(http.TimeFormat))
 }
 
 // 增加国际化支持方法
@@ -1446,19 +1482,19 @@ func (c *Context) ClearJWT() {
 	c.SetCookie(JWTCookieKey, "", -1, "/", c.RootDomain(), c.IsSsl(), true)
 }
 
-// 获取缓存实例
-func (c *Context) GetCache() *Cache[string, any] {
+// GetCache 获取缓存实例
+func (c *Context) GetCache() *cache.Cache[string, any] {
 	return c.cache
 }
 
-// 设置缓存值
+// CacheSet 设置缓存值
 func (c *Context) CacheSet(key string, value any, duration ...time.Duration) {
 	if c.cache != nil {
 		c.cache.Set(key, value, duration...)
 	}
 }
 
-// 从缓存获取值
+// CacheGet 从缓存获取值
 func (c *Context) CacheGet(key string) (any, bool) {
 	if c.cache != nil {
 		return c.cache.Get(key)
@@ -1466,14 +1502,14 @@ func (c *Context) CacheGet(key string) (any, bool) {
 	return nil, false
 }
 
-// 从缓存删除值
+// CacheDelete 从缓存删除值
 func (c *Context) CacheDelete(key string) {
 	if c.cache != nil {
 		c.cache.Delete(key)
 	}
 }
 
-// 检查缓存中是否存在键
+// CacheHas 检查缓存中是否存在键
 func (c *Context) CacheHas(key string) bool {
 	if c.cache != nil {
 		return c.cache.Has(key)
@@ -1481,7 +1517,7 @@ func (c *Context) CacheHas(key string) bool {
 	return false
 }
 
-// 获取缓存中所有键
+// CacheKeys 获取缓存中所有键
 func (c *Context) CacheKeys() []string {
 	if c.cache != nil {
 		return c.cache.Keys()
@@ -1489,14 +1525,14 @@ func (c *Context) CacheKeys() []string {
 	return []string{}
 }
 
-// 清空缓存
+// CacheClear 清空缓存
 func (c *Context) CacheClear() {
 	if c.cache != nil {
 		c.cache.Clear()
 	}
 }
 
-// 从缓存获取字符串值
+// CacheGetString 从缓存获取字符串值
 func (c *Context) CacheGetString(key string) (string, bool) {
 	if c.cache == nil {
 		return "", false
@@ -1515,7 +1551,7 @@ func (c *Context) CacheGetString(key string) (string, bool) {
 	return "", false
 }
 
-// 从缓存获取整数值
+// CacheGetInt 从缓存获取整数值
 func (c *Context) CacheGetInt(key string) (int, bool) {
 	if c.cache == nil {
 		return 0, false
@@ -1534,7 +1570,7 @@ func (c *Context) CacheGetInt(key string) (int, bool) {
 	return 0, false
 }
 
-// 从缓存获取布尔值
+// CacheGetBool 从缓存获取布尔值
 func (c *Context) CacheGetBool(key string) (bool, bool) {
 	if c.cache == nil {
 		return false, false
@@ -1553,7 +1589,7 @@ func (c *Context) CacheGetBool(key string) (bool, bool) {
 	return false, false
 }
 
-// 从缓存获取浮点值
+// CacheGetFloat64 从缓存获取浮点值
 func (c *Context) CacheGetFloat64(key string) (float64, bool) {
 	if c.cache == nil {
 		return 0, false
@@ -1572,14 +1608,14 @@ func (c *Context) CacheGetFloat64(key string) (float64, bool) {
 	return 0, false
 }
 
-// 设置列表缓存
+// CacheSetList 设置列表缓存
 func (c *Context) CacheSetList(key string, duration ...time.Duration) {
 	if c.cache != nil {
 		c.cache.SetList(key, duration...)
 	}
 }
 
-// 向列表缓存头部添加元素
+// CacheLPush 向列表缓存头部添加元素
 func (c *Context) CacheLPush(key string, values ...any) int {
 	if c.cache != nil {
 		return c.cache.LPush(key, values...)
@@ -1587,7 +1623,7 @@ func (c *Context) CacheLPush(key string, values ...any) int {
 	return 0
 }
 
-// 向列表缓存尾部添加元素
+// CacheRPush 向列表缓存尾部添加元素
 func (c *Context) CacheRPush(key string, values ...any) int {
 	if c.cache != nil {
 		return c.cache.RPush(key, values...)
@@ -1595,7 +1631,7 @@ func (c *Context) CacheRPush(key string, values ...any) int {
 	return 0
 }
 
-// 从列表缓存头部弹出元素
+// CacheLPop 从列表缓存头部弹出元素
 func (c *Context) CacheLPop(key string) (any, bool) {
 	if c.cache != nil {
 		return c.cache.LPop(key)
@@ -1603,7 +1639,7 @@ func (c *Context) CacheLPop(key string) (any, bool) {
 	return nil, false
 }
 
-// 从列表缓存尾部弹出元素
+// CacheRPop 从列表缓存尾部弹出元素
 func (c *Context) CacheRPop(key string) (any, bool) {
 	if c.cache != nil {
 		return c.cache.RPop(key)
@@ -1611,7 +1647,7 @@ func (c *Context) CacheRPop(key string) (any, bool) {
 	return nil, false
 }
 
-// 获取列表缓存指定索引的元素
+// CacheLIndex 获取列表缓存指定索引的元素
 func (c *Context) CacheLIndex(key string, index int) (any, bool) {
 	if c.cache != nil {
 		return c.cache.LIndex(key, index)
@@ -1619,7 +1655,7 @@ func (c *Context) CacheLIndex(key string, index int) (any, bool) {
 	return nil, false
 }
 
-// 获取列表缓存的范围元素
+// CacheLRange 获取列表缓存的范围元素
 func (c *Context) CacheLRange(key string, start, stop int) []any {
 	if c.cache != nil {
 		return c.cache.LRange(key, start, stop)
@@ -1627,14 +1663,14 @@ func (c *Context) CacheLRange(key string, start, stop int) []any {
 	return []any{}
 }
 
-// 删除列表缓存
+// CacheDeleteList 删除列表缓存
 func (c *Context) CacheDeleteList(key string) {
 	if c.cache != nil {
 		c.cache.DeleteList(key)
 	}
 }
 
-// 检查列表缓存是否存在
+// CacheHasList 检查列表缓存是否存在
 func (c *Context) CacheHasList(key string) bool {
 	if c.cache != nil {
 		return c.cache.HasList(key)
@@ -1642,15 +1678,24 @@ func (c *Context) CacheHasList(key string) bool {
 	return false
 }
 
-// 初始化全局缓存
-func SetGlobalCache(defaultExpiration, cleanupInterval time.Duration) *Cache[string, any] {
-	cache := NewCache[string, any](defaultExpiration, cleanupInterval)
-	return cache
+// setGlobalCache 初始化全局缓存
+func (c *Context) setGlobalCache(cache *cache.Cache[string, any]) {
+	c.cache = cache
 }
 
-// 初始化带持久化的全局缓存
-func SetGlobalCacheWithPersistence(defaultExpiration, cleanupInterval time.Duration, persistPath string, autoPersistInterval time.Duration) *Cache[string, any] {
-	cache := NewCache[string, any](defaultExpiration, cleanupInterval).WithPersistence(persistPath, autoPersistInterval)
-	cache.EnableAutoPersist()
-	return cache
+// newContext 创建一个新的Context实例
+// 如果baseCtx已经是*Context类型，会继承它的缓存和SSE中心
+func newContext(c *gin.Context) *Context {
+	// 检查是否已经包装过
+	if existingCtx, ok := c.Value("_context_instance").(*Context); ok {
+		return existingCtx
+	}
+
+	// 创建新的上下文
+	ctx := &Context{Context: c}
+
+	// 存储在gin上下文中以便复用
+	c.Set("_context_instance", ctx)
+
+	return ctx
 }

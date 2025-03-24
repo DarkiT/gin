@@ -575,7 +575,7 @@
 
             function addEvent(e) {
                 const event = document.createElement('div');
-                event.className = `event ${e.event.replace('.', '-')}`;
+                event.className = `event ${e.event ? e.event.replace('.', '-') : 'unknown-event'}`;
                 
                 let data;
                 try {
@@ -588,7 +588,7 @@
                 
                 event.innerHTML = `
                     <div class="event-header">
-                        <span class="event-type">${e.event}</span>
+                        <span class="event-type">${e.event || 'unknown'}</span>
                         <span class="event-time">${time}</span>
                     </div>
                     <div class="event-content">${data.message || JSON.stringify(data)}</div>
