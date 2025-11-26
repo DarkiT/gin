@@ -1,62 +1,198 @@
-### Go ###
-# Binaries for programs and plugins
+# 如果您更喜欢白名单模板而不是黑名单，请参考社区模板：
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# 程序和插件的二进制文件
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# 测试二进制文件，使用 `go test -c` 构建
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Go 覆盖率工具的输出，特别是与 LiteIDE 一起使用时
 *.out
-*.prof
-*.cgo1.go
-*.cgo2.c
-_cgo_defun.c
-_cgo_gotypes.go
-_cgo_export.*
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# 依赖目录（删除下面的注释以包含它）
+vendor/
+.vscode/
+.todo/
+.idea/
+.fleet/
+.cnb
 
-# Go workspace file
+# Go 工作区文件
 go.work
+go.work.sum
 
-# System file
+# 环境变量文件
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.envrc
+.specstory
+
+# 临时文件
+*~
+*.tmp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 构建输出目录
+bin/
+dist/
+build/
+_output/
+
+# 日志文件
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 覆盖率和性能分析文件
+coverage/
+*.prof
+*.pprof
+*.cov
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 包含敏感信息的配置文件
+config.yaml
+secrets.yaml
+*_secret.yaml
+*_secrets.yaml
+
+# Air 热重载
+.air.toml
+tmp/
+
+# 调试文件
+./debug/
+__debug_bin
+debug.test
+
+# 操作系统生成的文件
 .DS_Store
 .DS_Store?
-.AppleDouble
-.LSOverride
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
-.TemporaryItems
-.fseventsd
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-.specstory
 
-# IDE
-.idea/
-/go_build_*
-out/
+# 编辑器配置文件
 .vscode/
-.vscode/settings.json
-*.sublime*
-__debug_bin
-.project
-dist
-likeadmin
-likeadmin_*
+.idea/
+*.swp
+*.swo
+*~
 
-# custom
-# env
-.env
-# binary
-main
-plugins
-config.json
+# 包管理器文件
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# 缓存目录
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.vuepress/dist/
+
+# 测试覆盖率报告
+coverage/
+.nyc_output/
+*.lcov
+coverage.html
+
+# 文档生成输出
+docs/_build/
+docs/site/
+
+# 备份文件
+*.bak
+*.backup
+*.old
+
+# 脚本文件
+.scripts/
+
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+
+# 证书和密钥文件
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# 本地配置文件
+config.local.yaml
+config.local.json
+settings.local.json
+repomix.config.json
+.repomixignore
+
+# 性能分析文件
+cpu.prof
+mem.prof
+block.prof
+mutex.prof
+
+# 测试数据文件
+testdata/
+fixtures/
+*.testdata
+
+# 构建产物
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# 容器相关
+Dockerfile.dev
+docker-compose.override.yml
+.dockerignore
+
+# 监控和日志
+prometheus.yml
+grafana/
+*.log.*
+
+# 本地开发工具
+.history/
+.vscode-server/
+
+# AI 配置
+.spec-workflow/
+.serena
+.claude
+.kiro
+.cursor
+.cursorrules
+.vibedev
+.codex
+.gemini
+.mcp.json
+CLAUDE.md
+CLAUDE_CN.md
+AGENTS.md
