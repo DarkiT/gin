@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE调试页面</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .events { border: 1px solid #ddd; height: 400px; overflow-y: auto; padding: 10px; margin: 10px 0; }
+        .event { margin: 5px 0; padding: 5px; border-left: 3px solid #007bff; background-color: #f8f9fa; }
+        .controls { margin: 10px 0; }
+        button { margin: 5px; padding: 8px 16px; }
+        input, select { margin: 5px; padding: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SSE调试页面</h1>
+        
+        <div id="status" class="status disconnected">未连接</div>
+        
+        <div class="controls">
+            <button id="connectBtn">连接SSE</button>
+            <button id="disconnectBtn" disabled>断开连接</button>
+            <button id="clearBtn">清空事件</button>
+        </div>
+        
+        <div class="controls">
+            <h3>发送广播消息</h3>
+            <select id="eventType">
+                <option value="user.created">user.created</option>
+                <option value="user.updated">user.updated</option>
+                <option value="system.notice">system.notice</option>
+                <option value="ping">ping</option>
+                <option value="custom.test">custom.test</option>
+            </select>
+            <input type="text" id="broadcastMessage" placeholder="广播消息内容" value="测试广播消息">
+            <button id="broadcastBtn">发送广播</button>
+        </div>
+        
+        <div class="controls">
+            <h3>发送私发消息</h3>
+            <input type="text" id="targetClient" placeholder="目标客户端ID">
+            <input type="text" id="privateMessage" placeholder="私发消息内容" value="测试私发消息">
+            <button id="privateBtn">发送私发</button>
+        </div>
+        
+        <div class="controls">
+            <button id="getClientsBtn">获取在线客户端</button>
+            <span id="clientsInfo"></span>
+        </div>
+        
+        <div id="events" class="events"></div>
+    </div>
+
+    <script>
+        let evtSource = null;
+        
+        // 生成与后端一致的纳秒级时间戳ID
+        function generateEventID() {
+            // JavaScript Date.now() 返回毫秒，转换为纳秒
+            return (Date.now() * 1000000 + Math.floor(Math.random() * 1000000)).toString();
+        }
+        
+        const clientId = 'debug_client_' + generateEventID();
+        
+        // 所有事件类型都订阅，便于调试
+        const eventFilter = 'user.created,user.updated,system.notice,ping,custom.test';
+        
+        const statusDiv = document.getElementById('status');
+        const eventsDiv = document.getElementById('events');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const broadcastBtn = document.getElementById('broadcastBtn');
+        const privateBtn = document.getElementById('privateBtn');
+        const getClientsBtn = document.getElementById('getClientsBtn');
+        
+        // 连接SSE
+        connectBtn.addEventListener('click', function() {
+            if (evtSource) {
+                evtSource.close();
+            }
+            
+            const url = `/sse-api/events?client_id=${clientId}&filter=${eventFilter}`;
+            addEvent('系统', `正在连接到: ${url}`);
+            
+            evtSource = new EventSource(url);
+            
+            evtSource.onopen = function() {
+                statusDiv.textContent = `已连接 (客户端ID: ${clientId})`;
+                statusDiv.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                addEvent('系统', 'SSE连接已建立');
+            };
+            
+            evtSource.onerror = function(e) {
+                statusDiv.textContent = '连接错误';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addEvent('系统', '连接错误: ' + JSON.stringify(e));
+            };
+            
+            // 监听所有可能的事件类型
+            ['user.created', 'user.updated', 'system.notice', 'ping', 'custom.test'].forEach(eventType => {
+                evtSource.addEventListener(eventType, function(e) {
+                    addEvent(eventType, e.data, e.id);
+                });
+            });
+        });
+        
+        // 断开连接
+        disconnectBtn.addEventListener('click', function() {
+            if (evtSource) {
+                evtSource.close();
+                evtSource = null;
+            }
+            statusDiv.textContent = '已断开连接';
+            statusDiv.className = 'status disconnected';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            addEvent('系统', '连接已断开');
+        });
+        
+        // 清空事件
+        clearBtn.addEventListener('click', function() {
+            eventsDiv.innerHTML = '';
+        });
+        
+        // 发送广播
+        broadcastBtn.addEventListener('click', function() {
+            const eventType = document.getElementById('eventType').value;
+            const message = document.getElementById('broadcastMessage').value;
+            
+            if (!message) {
+                alert('请输入消息内容');
+                return;
+            }
+            
+            fetch('/sse-api/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ event: eventType, message: message })
+            })
+            .then(response => response.json())
+            .then(data => {
+                addEvent('系统', `广播发送结果: ${JSON.stringify(data)}`);
+            })
+            .catch(error => {
+                addEvent('系统', `广播发送失败: ${error}`);
+            });
+        });
+        
+        // 发送私发
+        privateBtn.addEventListener('click', function() {
+            const targetClient = document.getElementById('targetClient').value || clientId;
+            const message = document.getElementById('privateMessage').value;
+            
+            if (!message) {
+                alert('请输入消息内容');
+                return;
+            }
+            
+            fetch(`/sse-api/send/${targetClient}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            })
+            .then(response => response.json())
+            .then(data => {
+                addEvent('系统', `私发发送结果: ${JSON.stringify(data)}`);
+            })
+            .catch(error => {
+                addEvent('系统', `私发发送失败: ${error}`);
+            });
+        });
+        
+        // 获取在线客户端
+        getClientsBtn.addEventListener('click', function() {
+            fetch('/sse-api/clients')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('clientsInfo').textContent = 
+                    `在线客户端: ${data.data.clients.join(', ')} (共${data.data.count}个)`;
+                addEvent('系统', `在线客户端: ${JSON.stringify(data.data.clients)}`);
+            })
+            .catch(error => {
+                addEvent('系统', `获取客户端列表失败: ${error}`);
+            });
+        });
+        
+        function addEvent(type, data, id) {
+            const eventDiv = document.createElement('div');
+            eventDiv.className = 'event';
+            
+            const time = new Date().toLocaleTimeString();
+            let content = `[${time}] [${type}] `;
+            
+            if (typeof data === 'string') {
+                try {
+                    const parsed = JSON.parse(data);
+                    content += JSON.stringify(parsed, null, 2);
+                } catch {
+                    content += data;
+                }
+            } else {
+                content += JSON.stringify(data, null, 2);
+            }
+            
+            if (id) {
+                content += ` (ID: ${id})`;
+            }
+            
+            eventDiv.textContent = content;
+            eventsDiv.appendChild(eventDiv);
+            eventsDiv.scrollTop = eventsDiv.scrollHeight;
+        }
+        
+        // 页面加载时自动设置目标客户端ID
+        document.getElementById('targetClient').value = clientId;
+    </script>
+</body>
+</html>

@@ -275,6 +275,20 @@
                         <button id="disconnectBtn" class="secondary" disabled>断开连接</button>
                         <button id="clearBtn" class="secondary">清空事件</button>
                     </div>
+                    <div class="form-group">
+                        <div class="checkbox-item" style="margin-bottom: 10px;">
+                            <input type="checkbox" id="autoReconnect" checked>
+                            <label for="autoReconnect">自动重连</label>
+                        </div>
+                        <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                            <label for="reconnectInterval" style="margin-right: 8px; margin-bottom: 0; min-width: 110px;">重连间隔 (秒):</label>
+                            <input type="number" id="reconnectInterval" value="3" min="1" max="60" style="width: 80px;">
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <label for="maxRetries" style="margin-right: 8px; margin-bottom: 0; min-width: 110px;">最大重试次数:</label>
+                            <input type="number" id="maxRetries" value="5" min="0" max="20" style="width: 80px;">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -333,7 +347,14 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             let evtSource = null;
-            const clientId = 'client_' + Date.now();
+            
+            // 生成与后端一致的纳秒级时间戳ID
+            function generateEventID() {
+                // JavaScript Date.now() 返回毫秒，转换为纳秒
+                return (Date.now() * 1000000 + Math.floor(Math.random() * 1000000)).toString();
+            }
+            
+            const clientId = 'client_' + generateEventID();
             const statusIndicator = document.getElementById('statusIndicator');
             const statusText = document.getElementById('statusText');
             const eventsContainer = document.getElementById('events');
@@ -350,14 +371,21 @@
             const clientIDInput = document.getElementById('clientID');
 
             let selectedClient = null;
+            let reconnectTimer = null;
+            let retryCount = 0;
+            let manualDisconnect = false;
 
             // 连接到SSE
             connectBtn.addEventListener('click', function() {
+                manualDisconnect = false;
+                retryCount = 0;
                 connectSSE();
             });
 
             // 断开SSE连接
             disconnectBtn.addEventListener('click', function() {
+                manualDisconnect = true;
+                clearReconnectTimer();
                 disconnectSSE();
             });
 
@@ -432,19 +460,71 @@
                     addEvent({
                         event: 'system.notice',
                         data: JSON.stringify({ message: '消息发送成功', response: data }),
-                        id: Date.now()
+                        id: generateEventID()
                     });
                 })
                 .catch(error => {
                     addEvent({
                         event: 'system.notice',
                         data: JSON.stringify({ message: '消息发送失败', error: error.toString() }),
-                        id: Date.now()
+                        id: generateEventID()
                     });
                 });
             });
 
+            // 清除重连定时器
+            function clearReconnectTimer() {
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+            }
+
+            // 自动重连函数
+            function scheduleReconnect() {
+                if (manualDisconnect) {
+                    return; // 手动断开，不重连
+                }
+
+                const autoReconnect = document.getElementById('autoReconnect').checked;
+                const maxRetries = parseInt(document.getElementById('maxRetries').value);
+
+                if (!autoReconnect) {
+                    return; // 未启用自动重连
+                }
+
+                if (maxRetries > 0 && retryCount >= maxRetries) {
+                    addEvent({
+                        event: 'system.notice',
+                        data: JSON.stringify({
+                            message: `已达到最大重试次数 (${maxRetries})，停止重连`,
+                            time: new Date().toLocaleString()
+                        }),
+                        id: generateEventID()
+                    });
+                    return;
+                }
+
+                const interval = parseInt(document.getElementById('reconnectInterval').value) * 1000;
+                retryCount++;
+                
+                addEvent({
+                    event: 'system.notice',
+                    data: JSON.stringify({
+                        message: `第 ${retryCount} 次重连将在 ${interval/1000} 秒后开始...`,
+                        time: new Date().toLocaleString()
+                    }),
+                    id: generateEventID()
+                });
+
+                reconnectTimer = setTimeout(() => {
+                    connectSSE();
+                }, interval);
+            }
+
             function connectSSE() {
+                clearReconnectTimer();
+                
                 if (evtSource) {
                     evtSource.close();
                 }
@@ -493,25 +573,39 @@
                     connectBtn.disabled = true;
                     disconnectBtn.disabled = false;
                     
+                    // 连接成功，记录当前重试次数并重置
+                    const currentRetryCount = retryCount;
+                    retryCount = 0;
+                    clearReconnectTimer();
+                    
+                    const message = currentRetryCount > 0 ? 
+                        `SSE重连成功 (第${currentRetryCount}次尝试)` : 'SSE连接已建立';
+                    
                     addEvent({
                         event: 'system.notice',
                         data: JSON.stringify({
-                            message: 'SSE连接已建立',
+                            message: message,
                             clientId: clientId,
                             time: new Date().toLocaleString()
                         }),
-                        id: Date.now()
+                        id: generateEventID()
                     });
                     
                     // 连接成功后立即刷新客户端列表
                     refreshClients();
                 };
 
-                // 监听事件
+                // 监听特定事件类型
                 es.addEventListener('user.created', handleEvent);
                 es.addEventListener('user.updated', handleEvent);
                 es.addEventListener('system.notice', handleEvent);
                 es.addEventListener('ping', handleEvent);
+                
+                // 监听默认的message事件（用于处理没有指定event字段的消息）
+                es.addEventListener('message', handleEvent);
+                
+                // 监听所有其他可能的事件类型
+                es.addEventListener('error', handleEvent);
 
                 // 错误处理
                 es.onerror = function(e) {
@@ -526,13 +620,13 @@
                             message: 'SSE连接错误或关闭',
                             time: new Date().toLocaleString()
                         }),
-                        id: Date.now()
+                        id: generateEventID()
                     });
                     
                     es.close();
                     evtSource = null;
                     
-                    // 检查Hub状态，如果关闭则不重连
+                    // 检查Hub状态，决定是否重连
                     checkHubStatus().then(running => {
                         if (!running) {
                             addEvent({
@@ -541,9 +635,15 @@
                                     message: 'SSE服务已关闭，请重启服务',
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
+                        } else {
+                            // 服务运行中，尝试自动重连
+                            scheduleReconnect();
                         }
+                    }).catch(() => {
+                        // 无法获取状态，也尝试重连
+                        scheduleReconnect();
                     });
                 };
             }
@@ -564,18 +664,43 @@
                             message: 'SSE连接已手动断开',
                             time: new Date().toLocaleString()
                         }),
-                        id: Date.now()
+                        id: generateEventID()
                     });
                 }
             }
 
             function handleEvent(e) {
-                addEvent(e);
+                // 确保事件对象有正确的类型信息
+                const eventObj = {
+                    event: e.type || 'unknown',  // 使用事件类型作为事件名称
+                    data: e.data || '',
+                    id: e.lastEventId || generateEventID()
+                };
+                
+                // 如果是message事件，尝试从数据中解析实际的事件类型
+                if (e.type === 'message' && e.data) {
+                    try {
+                        const parsedData = JSON.parse(e.data);
+                        // 如果数据中包含事件类型信息，使用它
+                        if (parsedData.event) {
+                            eventObj.event = parsedData.event;
+                        }
+                    } catch (error) {
+                        // 解析失败，保持原有逻辑
+                    }
+                }
+                
+                addEvent(eventObj);
             }
 
             function addEvent(e) {
                 const event = document.createElement('div');
-                event.className = `event ${e.event ? e.event.replace('.', '-') : 'unknown-event'}`;
+                
+                // 确定事件类型和CSS类名
+                let eventType = e.event || 'unknown';
+                let cssClass = `event ${eventType.replace('.', '-')}`;
+                
+                event.className = cssClass;
                 
                 let data;
                 try {
@@ -584,14 +709,30 @@
                     data = { message: e.data };
                 }
                 
+                // 优先使用数据中的时间，否则使用当前时间
                 const time = data.time || new Date().toLocaleString();
+                
+                // 如果事件类型仍然是unknown，尝试从数据中获取更多信息
+                if (eventType === 'unknown' && data.event) {
+                    eventType = data.event;
+                    event.className = `event ${eventType.replace('.', '-')}`;
+                }
+                
+                // 构建事件显示内容
+                let content = data.message || JSON.stringify(data);
+                
+                // 如果内容太长，进行截断
+                if (content.length > 200) {
+                    content = content.substring(0, 200) + '...';
+                }
                 
                 event.innerHTML = `
                     <div class="event-header">
-                        <span class="event-type">${e.event || 'unknown'}</span>
+                        <span class="event-type">${eventType}</span>
                         <span class="event-time">${time}</span>
+                        ${e.id ? `<span class="event-id" style="font-size: 12px; color: #999;">ID: ${e.id}</span>` : ''}
                     </div>
-                    <div class="event-content">${data.message || JSON.stringify(data)}</div>
+                    <div class="event-content">${content}</div>
                 `;
                 
                 eventsContainer.prepend(event);
@@ -600,6 +741,14 @@
                 if (eventsContainer.children.length > 100) {
                     eventsContainer.removeChild(eventsContainer.lastChild);
                 }
+                
+                // 添加调试信息到控制台
+                console.log('SSE Event:', {
+                    type: eventType,
+                    originalType: e.event,
+                    data: data,
+                    rawData: e.data
+                });
             }
             
             // 新增函数 - 刷新客户端列表
@@ -636,7 +785,7 @@
                                     message: `客户端列表已刷新，共${data.data.clients.length}个客户端`,
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
                         } else {
                             addEvent({
@@ -646,7 +795,7 @@
                                     error: data.msg || '未知错误',
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
                         }
                     })
@@ -658,7 +807,7 @@
                                 error: error.toString(),
                                 time: new Date().toLocaleString()
                             }),
-                            id: Date.now()
+                            id: generateEventID()
                         });
                     });
             }
@@ -697,7 +846,7 @@
                         message: `已选择客户端: ${cid}`,
                         time: new Date().toLocaleString()
                     }),
-                    id: Date.now()
+                    id: generateEventID()
                 });
             }
             
@@ -712,7 +861,7 @@
                                     message: 'SSE服务已关闭',
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
                             
                             // 自动断开连接
@@ -727,7 +876,7 @@
                                     error: data.msg || '未知错误',
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
                         }
                     })
@@ -739,7 +888,7 @@
                                 error: error.toString(),
                                 time: new Date().toLocaleString()
                             }),
-                            id: Date.now()
+                            id: generateEventID()
                         });
                     });
             }
@@ -755,7 +904,7 @@
                                     message: 'SSE服务已重启',
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
                             
                             // 自动重新连接
@@ -772,7 +921,7 @@
                                     error: data.msg || '未知错误',
                                     time: new Date().toLocaleString()
                                 }),
-                                id: Date.now()
+                                id: generateEventID()
                             });
                         }
                     })
@@ -784,7 +933,7 @@
                                 error: error.toString(),
                                 time: new Date().toLocaleString()
                             }),
-                            id: Date.now()
+                            id: generateEventID()
                         });
                     });
             }
@@ -803,6 +952,8 @@
             
             // 自动连接
             setTimeout(() => {
+                manualDisconnect = false;
+                retryCount = 0;
                 connectSSE();
             }, 500);
             

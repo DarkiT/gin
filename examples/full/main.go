@@ -1,28 +1,53 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/darkit/gin"
+	"github.com/darkit/gin/pkg/sse"
 	"github.com/go-playground/validator/v10"
 )
 
 //go:embed templates/*.html
-var content embed.FS
+var templates embed.FS
+
+//go:embed static/*
+var staticFiles embed.FS
 
 // 定义全局 SSE Hub 和 缓存
 var (
-	hub       *gin.SSEHub
+	hub       *sse.Hub
 	cacheMap  = make(map[string]interface{})
 	ginEngine *gin.Router // 保存gin引擎的引用
+	hubMu     sync.RWMutex
+
+	// 全局上下文，用于控制后台goroutine的生命周期
+	appCtx, appCancel = context.WithCancel(context.Background())
 )
+
+func getHub() *sse.Hub {
+	hubMu.RLock()
+	defer hubMu.RUnlock()
+	return hub
+}
+
+func setHub(h *sse.Hub) {
+	hubMu.Lock()
+	hub = h
+	hubMu.Unlock()
+}
 
 // 常量定义
 const (
@@ -81,43 +106,170 @@ type FormValidateRequest struct {
 }
 
 func main() {
-	// 创建路由
-	r := gin.Default()
-	ginEngine = r // 保存gin引擎的引用
+	// 创建安全配置
+	securityConfig := &gin.SecurityConfig{
+		JWTSecretKey:      []byte(JWTSecretKey),
+		JWTAlgorithm:      "HS256",
+		JWTExpiration:     time.Hour,
+		JWTRefreshEnabled: true,
 
-	// 初始化缓存系统，初始化时默认缓存 (2小时过期，10分钟清理)
-	// r.SetCacheConfig(time.Hour, time.Minute*10)
-	// r.EnablePersistCache(CacheSavePath, time.Minute*5)
-	r.Use(r.SetPersistCacheMiddleware(time.Hour, time.Minute*10, CacheSavePath, time.Minute*5))
+		// CORS安全配置
+		CORSAllowedOrigins:   []string{"http://localhost:3000", "http://localhost:8080"},
+		CORSAllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		CORSAllowedHeaders:   []string{"Content-Type", "Authorization", "X-Requested-With"},
+		CORSMaxAge:           86400,
+		CORSAllowCredentials: false,
 
-	// 创建 SSE Hub，设置历史记录大小为 20
-	hub = r.NewSSEHub(20)
-	go hub.Run() // 启动 Hub
+		// 安全头和限流
+		SecurityHeadersEnabled:     true,
+		RateLimitEnabled:           true,
+		RateLimitRequestsPerMinute: 60,
+	}
 
-	// 添加一个定时任务，每30秒发送ping事件，确保连接保持活跃
+	config := &gin.Config{
+		SecurityConfig:      securityConfig,
+		SSEEnabled:          true,
+		ErrorHandlerEnabled: true,
+		SensitiveFilter:     true,
+	}
+
+	// 使用兼容的gin.Default()方式，传入配置启用JWT
+	r := gin.Default(config)
+
+	// 将Router实例赋值给全局变量，供其他函数使用
+	ginEngine = r
+
+	// 启动SSE服务
+	if err := r.StartSSE(); err != nil {
+		log.Fatalf("启动SSE失败: %v", err)
+	}
+	setHub(r.GetSSEHub())
+
+	// 设置信号监听，当收到系统信号时触发应用级取消
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
+		// 创建信号监听通道
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-		for range ticker.C {
-			if hub.IsRunning() {
-				hub.BroadCast(&gin.SSEEvent{
-					Event: "ping",
-					Data:  gin.H{"message": "ping", "time": time.Now().Format("2006-01-02 15:04:05")},
-					ID:    fmt.Sprintf("%d", time.Now().UnixNano()),
-				})
-			}
-		}
+		// 等待信号
+		sig := <-sigChan
+		log.Printf("收到系统信号: %v，触发优雅停机...", sig)
+
+		// 触发应用级取消，这将通知所有使用appCtx的组件
+		appCancel()
+	}()
+
+	go func() {
+		<-appCtx.Done()
+		log.Println("ping定时任务收到停机信号，正在退出...")
 	}()
 
 	// 注册路由
 	setupRoutes(r)
 
-	// 启动服务器
+	// 添加服务器控制路由
+	controlAPI := r.Group("/control")
+	{
+		// 显示当前服务器状态
+		controlAPI.GET("/status", handleStatus)
+		// 重启服务器
+		controlAPI.GET("/restart", handleRestart)
+		// 关闭服务器
+		controlAPI.GET("/shutdown", handleShutdown)
+	}
+
+	// 服务器配置
+	serverConfig := gin.DefaultServerConfig()
+	serverConfig.Port = "8080"
+	serverConfig.GracefulTimeout = 5 * time.Second
+
+	// 启动服务器，使用全局上下文
 	log.Println("服务器启动在 http://localhost:8080")
-	if err := r.Run(":8080"); err != nil {
+	if err := r.RunWithContext(appCtx, serverConfig); err != nil && err != http.ErrServerClosed {
 		log.Fatal("服务器启动失败:", err)
 	}
+
+	// 服务器退出时清理资源
+	log.Println("正在清理资源...")
+	// 检查上下文是否已经被取消，如果没有则取消
+	select {
+	case <-appCtx.Done():
+		// 上下文已经被取消，不需要再次调用appCancel
+		log.Println("上下文已被取消，继续清理...")
+	default:
+		// 上下文尚未取消，调用appCancel
+		appCancel() // 通知所有后台goroutine退出
+	}
+
+	// 等待一段时间确保所有goroutine正确退出
+	time.Sleep(1 * time.Second)
+
+	log.Println("服务器已优雅关闭")
+}
+
+// 服务器状态处理器
+func handleStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "成功",
+		"data": gin.H{
+			"running":  true, // 简化：只要能响应就是运行中
+			"time":     time.Now().Format("2006-01-02 15:04:05"),
+			"uptime":   "服务器运行时间信息", // 可以添加更多运行时间信息
+			"requests": "请求统计信息",    // 可以添加请求统计
+		},
+	})
+}
+
+func handleRestart(c *gin.Context) {
+	// 在后台触发重启
+	go func() {
+		// 给客户端一点时间接收响应
+		time.Sleep(100 * time.Millisecond)
+
+		log.Println("正在重启服务器...")
+
+		// 使用 ginEngine 的 Restart 方法
+		if err := ginEngine.Restart(); err != nil {
+			log.Printf("重启服务器出错: %v", err)
+		}
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "服务器正在重启，请等待...",
+	})
+}
+
+func handleShutdown(c *gin.Context) {
+	// 在后台触发优雅停机
+	go func() {
+		// 给客户端一点时间接收响应
+		time.Sleep(100 * time.Millisecond)
+		// 调用取消函数触发优雅停机
+		appCancel()
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "服务器正在优雅关闭，请等待...",
+	})
+}
+
+// AuthMiddleware 认证中间件
+func AuthMiddleware(c *gin.Context) {
+	// 从增强的Context获取JWT令牌并验证
+	jwt, ok := c.RequireJWT()
+	if !ok {
+		return // RequireJWT已经处理了错误响应
+	}
+
+	// 将用户信息设置到上下文中
+	c.Set("jwt_payload", jwt)
+	c.Set("user_id", jwt["user_id"])
+	c.Set("username", jwt["username"])
+
+	c.Next()
 }
 
 // setupRoutes 设置路由
@@ -144,7 +296,7 @@ func setupRoutes(r *gin.Router) {
 
 	// 使用函数映射创建模板
 	tmpl := template.New("").Funcs(funcMap)
-	tmpl = template.Must(tmpl.ParseFS(content, "templates/*.html"))
+	tmpl = template.Must(tmpl.ParseFS(templates, "templates/*.html"))
 	r.Engine().SetHTMLTemplate(tmpl)
 
 	// 根路由 - 首页
@@ -163,7 +315,8 @@ func setupRoutes(r *gin.Router) {
 	}
 
 	// 受保护的API路由组
-	api := r.Group("/api", AuthMiddleware)
+	api := r.Group("/api")
+	api.Use(AuthMiddleware)
 	{
 		// 用户相关API
 		api.GET("/user/profile", handleUserProfile)
@@ -193,6 +346,10 @@ func setupRoutes(r *gin.Router) {
 		sseRoutes.GET("/clients", handleListClients)
 		// 获取 Hub 状态
 		sseRoutes.GET("/status", handleHubStatus)
+		// 获取性能统计
+		sseRoutes.GET("/stats", handleSSEStats)
+		// 获取性能指标
+		sseRoutes.GET("/metrics", handleSSEMetrics)
 		// 关闭 Hub
 		sseRoutes.GET("/close", handleCloseHub)
 		// 重启 Hub
@@ -234,34 +391,48 @@ func setupRoutes(r *gin.Router) {
 	// SSE演示页面
 	r.GET("/sse", handleSSEPage)
 
+	// SSE调试页面
+	r.GET("/sse-debug", handleSSEDebugPage)
+
+	// 设置静态文件服务（使用内嵌文件系统）
+	r.Engine().StaticFS("/static", http.FS(staticFiles))
+
 	// 模拟用户相关事件
 	go simulateUserEvents()
 }
 
-// AuthMiddleware 认证中间件
-func AuthMiddleware(c *gin.Context) {
-	jwt, ok := c.RequireJWT(JWTSecretKey)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code": 401,
-			"msg":  "未授权访问，请先登录",
-		})
-		c.Abort()
-		return
-	}
-
-	// 将用户信息设置到上下文中
-	c.Set("jwt_id", jwt.GetJWTID())
-	c.Set("expires_at", jwt.GetExpiresAt())
-
-	c.Next()
-}
-
 // handleIndex 处理首页请求
 func handleIndex(c *gin.Context) {
+	// 获取当前服务器状态
+	serverStatus := "运行中"
+	if !ginEngine.IsRunning() {
+		serverStatus = "已停止"
+	}
+
+	// 服务器控制相关API
+	serverControls := []gin.H{
+		{
+			"name": "服务器状态",
+			"url":  "/control/status",
+			"desc": "查看当前服务器状态",
+		},
+		{
+			"name": "优雅重启",
+			"url":  "/control/restart",
+			"desc": "重启服务器（等待现有请求处理完成）",
+		},
+		{
+			"name": "优雅停机",
+			"url":  "/control/shutdown",
+			"desc": "停止服务器（等待现有请求处理完成）",
+		},
+	}
+
 	c.HTML(200, "index.html", gin.H{
-		"title": "Gin框架扩展演示",
-		"time":  time.Now().Format("2006-01-02 15:04:05"),
+		"title":         "Gin框架扩展演示",
+		"time":          time.Now().Format("2006-01-02 15:04:05"),
+		"server_status": serverStatus,
+		"controls":      serverControls,
 	})
 }
 
@@ -333,8 +504,20 @@ func handleLogin(c *gin.Context) {
 		}
 	}
 
-	// 简单验证，实际应用中需要更复杂的验证逻辑
-	if username != "demo" || password != "123456" {
+	// 从环境变量获取用户名和密码，如果不存在则使用默认值（仅用于开发环境）
+	validUsername := os.Getenv("DEMO_USERNAME")
+	validPassword := os.Getenv("DEMO_PASSWORD")
+
+	// 如果环境变量未设置，使用默认值（仅用于开发环境）
+	if validUsername == "" {
+		validUsername = "demo"
+	}
+	if validPassword == "" {
+		validPassword = "123456"
+	}
+
+	// 验证用户名和密码
+	if username != validUsername || password != validPassword {
 		if isPost {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code": 401,
@@ -354,12 +537,21 @@ func handleLogin(c *gin.Context) {
 	// 生成用户ID（实际应用中应该从数据库获取）
 	userID := fmt.Sprintf("user_%d", time.Now().Unix())
 
-	// 生成简单的token（实际应用中应该使用JWT）
-	token, _ := c.CreateJWTSession(JWTSecretKey, 1*time.Hour, gin.H{
+	// 创建JWT payload并生成token
+	payload := gin.H{
 		"user_id":  userID,
 		"username": username,
 		"time":     time.Now().Unix(),
-	})
+	}
+
+	token, err := c.CreateJWTSession(JWTSecretKey, 1*time.Hour, payload)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code": 500,
+			"msg":  "生成token失败: " + err.Error(),
+		})
+		return
+	}
 
 	// 对于POST请求，返回JSON而不是重定向
 	if isPost {
@@ -642,73 +834,98 @@ func handleSSE(c *gin.Context) {
 		eventTypes = strings.Split(filter, ",")
 	}
 
-	// 创建新的 SSE 客户端连接
-	client := c.NewSSEClient(hub, eventTypes...)
-
-	// 设置客户端ID
-	client.ID = clientID
+	// 创建新的 SSE 客户端连接 - 在注册前指定 ID
+	client := c.NewSSEClientWithOptions(eventTypes, sse.WithClientID(clientID))
+	if client == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code": 500,
+			"msg":  "SSE服务未可用",
+		})
+		return
+	}
 
 	// 记录连接日志
 	log.Printf("新的SSE客户端连接: %s, 订阅事件: %v\n", clientID, eventTypes)
 
 	// 发送连接成功事件
-	hub.SendToClient(client.ID, &gin.SSEEvent{
+	now := time.Now()
+	h := getHub()
+	if h == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "msg": "SSE服务不可用"})
+		return
+	}
+	h.SendToClient(client.ID, &sse.Event{
 		Event: "system.notice",
 		Data: gin.H{
 			"message":  "SSE 连接成功",
 			"clientID": client.ID,
-			"time":     time.Now().Format("2006-01-02 15:04:05"),
+			"time":     now.Format("2006-01-02 15:04:05"),
 		},
+		ID: fmt.Sprintf("%d", now.UnixNano()),
 	})
 
-	// 等待连接断开
-	<-client.Disconnected
+	// 启动客户端消息监听 - 这是关键步骤！
+	client.Listen()
+
+	// 客户端断开连接后清理资源
 	log.Printf("SSE客户端断开连接: %s\n", clientID)
 }
 
 // handleListClients 处理获取客户端列表请求
 func handleListClients(c *gin.Context) {
-	clients := hub.GetClients()
+	var clients []string
+	if h := getHub(); h != nil {
+		hubClients := h.GetClients()
+		clients = append(clients, hubClients...)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
 		"msg":  "获取客户端列表成功",
 		"data": gin.H{
 			"clients": clients,
 			"count":   len(clients),
+			"time":    time.Now().Format("2006-01-02 15:04:05"),
 		},
 	})
 }
 
 // handleHubStatus 处理获取 Hub 状态请求
 func handleHubStatus(c *gin.Context) {
-	isRunning := hub.IsRunning()
-	clientCount := 0
-	if isRunning {
-		clientCount = len(hub.GetClients())
+	var isRunning bool
+	var clientCount int
+
+	if h := getHub(); h != nil {
+		isRunning = h.IsRunning()
+		if isRunning {
+			clients := h.GetClients()
+			clientCount = len(clients)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
 		"msg":  "获取Hub状态成功",
 		"data": gin.H{
-			"running":     isRunning,
-			"time":        time.Now().Format("2006-01-02 15:04:05"),
-			"clientCount": clientCount,
+			"running": isRunning,
+			"clients": clientCount,
+			"time":    time.Now().Format("2006-01-02 15:04:05"),
 		},
 	})
 }
 
 // handleCloseHub 处理关闭 Hub 请求
 func handleCloseHub(c *gin.Context) {
-	if hub.IsRunning() {
-		hub.Close()
+	h := getHub()
+	if h != nil && h.IsRunning() {
+		h.Close()
+		setHub(nil)
 		log.Println("SSE Hub已关闭")
 		c.JSON(http.StatusOK, gin.H{
 			"code": 0,
 			"msg":  "Hub已关闭",
 			"data": gin.H{
-				"time":    time.Now().Format("2006-01-02 15:04:05"),
-				"running": false,
+				"time": time.Now().Format("2006-01-02 15:04:05"),
 			},
 		})
 	} else {
@@ -716,8 +933,7 @@ func handleCloseHub(c *gin.Context) {
 			"code": 0,
 			"msg":  "Hub已经处于关闭状态",
 			"data": gin.H{
-				"time":    time.Now().Format("2006-01-02 15:04:05"),
-				"running": false,
+				"time": time.Now().Format("2006-01-02 15:04:05"),
 			},
 		})
 	}
@@ -725,39 +941,65 @@ func handleCloseHub(c *gin.Context) {
 
 // handleRestartHub 处理重启 Hub 请求
 func handleRestartHub(c *gin.Context) {
-	if !hub.IsRunning() {
-		// 关闭旧的Hub
-		if hub != nil {
-			hub.Close()
-		}
-
-		// 重新初始化Hub
-		hub = ginEngine.NewSSEHub(20)
-		go hub.Run()
-
-		log.Println("SSE Hub已重启")
-		c.JSON(http.StatusOK, gin.H{
-			"code": 0,
-			"msg":  "Hub已重启",
-			"data": gin.H{
-				"time":    time.Now().Format("2006-01-02 15:04:05"),
-				"running": true,
-			},
+	// 检查ginEngine是否已正确初始化
+	if ginEngine == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code": 500,
+			"msg":  "服务器内部错误：Router未初始化",
 		})
-	} else {
-		c.JSON(http.StatusOK, gin.H{
-			"code": 0,
-			"msg":  "Hub正在运行中，无需重启",
-			"data": gin.H{
-				"time":    time.Now().Format("2006-01-02 15:04:05"),
-				"running": true,
-			},
-		})
+		return
 	}
+
+	// 关闭旧的Hub（如果存在）
+	if h := getHub(); h != nil {
+		log.Println("正在关闭旧的SSE Hub...")
+		h.Close()
+		setHub(nil)
+		// 等待一点时间确保完全关闭
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// 重新初始化Hub
+	log.Println("正在创建新的SSE Hub...")
+	newHub := ginEngine.NewSSEHub(20)
+	setHub(newHub)
+	if newHub == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code": 500,
+			"msg":  "Hub创建失败",
+		})
+		return
+	}
+
+	// 在后台启动Hub
+	go newHub.Run(context.Background())
+
+	// 等待一点时间确保Hub启动
+	time.Sleep(100 * time.Millisecond)
+
+	log.Println("SSE Hub已重启")
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "Hub已重启",
+		"data": gin.H{
+			"time":    time.Now().Format("2006-01-02 15:04:05"),
+			"running": newHub.IsRunning(),
+		},
+	})
 }
 
 // handleBroadcast 处理广播消息请求
 func handleBroadcast(c *gin.Context) {
+	// 检查hub是否可用
+	h := getHub()
+	if h == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code": 503,
+			"msg":  "SSE服务不可用",
+		})
+		return
+	}
+
 	var req BroadcastRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -768,23 +1010,24 @@ func handleBroadcast(c *gin.Context) {
 	}
 
 	// 广播消息
-	hub.BroadCast(&gin.SSEEvent{
+	now := time.Now()
+	h.Broadcast(&sse.Event{
 		Event: req.Event,
 		Data: gin.H{
 			"message": req.Message,
-			"time":    time.Now().Format("2006-01-02 15:04:05"),
+			"time":    now.Format("2006-01-02 15:04:05"),
 		},
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		ID: fmt.Sprintf("%d", now.UnixNano()),
 	})
 
 	// 获取当前在线客户端数量
-	clients := hub.GetClients()
+	hClients := h.GetClients()
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
 		"msg":  "广播消息已发送",
 		"data": gin.H{
-			"clients": len(clients),
+			"clients": len(hClients),
 			"event":   req.Event,
 			"message": req.Message,
 		},
@@ -793,6 +1036,16 @@ func handleBroadcast(c *gin.Context) {
 
 // handleSendToClient 处理发送消息到指定客户端请求
 func handleSendToClient(c *gin.Context) {
+	// 检查hub是否可用
+	h := getHub()
+	if h == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code": 503,
+			"msg":  "SSE服务不可用",
+		})
+		return
+	}
+
 	clientID := c.Param("clientID")
 	var req SendMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -804,13 +1057,14 @@ func handleSendToClient(c *gin.Context) {
 	}
 
 	// 发送消息到指定客户端
-	success := hub.SendToClient(clientID, &gin.SSEEvent{
+	now := time.Now()
+	success := h.SendToClient(clientID, &sse.Event{
 		Event: "system.notice",
 		Data: gin.H{
 			"message": req.Message,
-			"time":    time.Now().Format("2006-01-02 15:04:05"),
+			"time":    now.Format("2006-01-02 15:04:05"),
 		},
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		ID: fmt.Sprintf("%d", now.UnixNano()),
 	})
 
 	if success {
@@ -913,7 +1167,7 @@ func handleURLBuilder(c *gin.Context) {
 	}
 
 	// 创建URL构建器并链式调用相关方法
-	urlBuilder := c.BuildUrl(path).
+	urlBuilder := c.BuildURL(path).
 		Set("page", page).
 		Set("size", size).
 		Domain(domain).
@@ -924,7 +1178,7 @@ func handleURLBuilder(c *gin.Context) {
 		urlBuilder.Set("fragment", fragment)
 	}
 
-	url := urlBuilder.Builder()
+	url := urlBuilder.Build()
 
 	// 渲染URL构建工具页面
 	c.HTML(200, "url.html", gin.H{
@@ -950,7 +1204,7 @@ func handleRequestInfo(c *gin.Context) {
 	domain := c.Domain()
 	scheme := c.Scheme()
 	port := c.Port()
-	isSSL := c.IsSsl()
+	isSSL := c.IsSSL()
 	isAjax := c.IsAjax()
 	contentType := c.ContentType()
 	userAgent := c.Request.UserAgent()
@@ -1089,33 +1343,44 @@ func simulateUserEvents() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if !hub.IsRunning() {
-			continue
+	for {
+		select {
+		case <-ticker.C:
+			h := getHub()
+			if h == nil || !h.IsRunning() {
+				continue
+			}
+
+			// 随机选择事件类型和操作
+			event := events[time.Now().Unix()%2]
+			action := actions[time.Now().Unix()%5]
+			userID := fmt.Sprintf("user_%d", time.Now().Unix())
+
+			// 广播事件
+			h.Broadcast(&sse.Event{
+				Event: event,
+				Data: gin.H{
+					"user_id": userID,
+					"action":  action,
+					"message": fmt.Sprintf("用户 %s %s", userID, action),
+					"time":    time.Now().Format("2006-01-02 15:04:05"),
+				},
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()),
+			})
+		case <-appCtx.Done():
+			// 收到停机信号，退出goroutine
+			log.Println("收到停机信号，正在退出...")
+			return
 		}
-
-		// 随机选择事件类型和操作
-		event := events[time.Now().Unix()%2]
-		action := actions[time.Now().Unix()%5]
-		userID := fmt.Sprintf("user_%d", time.Now().Unix())
-
-		// 广播事件
-		hub.BroadCast(&gin.SSEEvent{
-			Event: event,
-			Data: gin.H{
-				"user_id": userID,
-				"action":  action,
-				"message": fmt.Sprintf("用户 %s %s", userID, action),
-				"time":    time.Now().Format("2006-01-02 15:04:05"),
-			},
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()),
-		})
 	}
 }
 
 // handleBroadcastPage 显示广播消息页面
 func handleBroadcastPage(c *gin.Context) {
-	clients := hub.GetClients()
+	var clients []string
+	if h := getHub(); h != nil {
+		clients = h.GetClients()
+	}
 	c.HTML(200, "sse.html", gin.H{
 		"title":   "广播消息",
 		"clients": clients,
@@ -1127,7 +1392,10 @@ func handleBroadcastPage(c *gin.Context) {
 // handleSendToClientPage 显示发送消息页面
 func handleSendToClientPage(c *gin.Context) {
 	clientID := c.Param("clientID")
-	clients := hub.GetClients()
+	var clients []string
+	if h := getHub(); h != nil {
+		clients = h.GetClients()
+	}
 	c.HTML(200, "sse.html", gin.H{
 		"title":     "发送消息",
 		"clients":   clients,
@@ -1139,7 +1407,10 @@ func handleSendToClientPage(c *gin.Context) {
 
 // handleSSEPage 显示SSE演示页面
 func handleSSEPage(c *gin.Context) {
-	clients := hub.GetClients()
+	var clients []string
+	if h := getHub(); h != nil {
+		clients = h.GetClients()
+	}
 	c.HTML(200, "sse.html", gin.H{
 		"title":   "服务器发送事件(SSE)演示",
 		"clients": clients,
@@ -1147,10 +1418,55 @@ func handleSSEPage(c *gin.Context) {
 	})
 }
 
+// handleSSEDebugPage 显示SSE调试页面
+func handleSSEDebugPage(c *gin.Context) {
+	c.HTML(200, "sse_debug.html", gin.H{
+		"title": "SSE调试页面",
+	})
+}
+
+// handleSSEStats 处理获取SSE统计信息请求
+func handleSSEStats(c *gin.Context) {
+	h := getHub()
+	if h == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code": 503,
+			"msg":  "SSE服务不可用",
+		})
+		return
+	}
+
+	stats := h.GetStats()
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "获取SSE统计信息成功",
+		"data": stats,
+	})
+}
+
+// handleSSEMetrics 处理获取SSE性能指标请求
+func handleSSEMetrics(c *gin.Context) {
+	h := getHub()
+	if h == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code": 503,
+			"msg":  "SSE服务不可用",
+		})
+		return
+	}
+
+	metrics := h.GetPerformanceMetrics()
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "获取SSE性能指标成功",
+		"data": metrics,
+	})
+}
+
 // handleAPIDemo 显示API演示页面
 func handleAPIDemo(c *gin.Context) {
 	// 从上下文中获取用户信息
-	userInfo, exists := c.RequireJWT(JWTSecretKey)
+	userInfo, exists := c.RequireJWT()
 	if !exists {
 		// 重定向到登录页面
 		c.HTML(302, "login.html", gin.H{
