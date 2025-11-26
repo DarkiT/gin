@@ -81,6 +81,8 @@ type Client struct {
 	firstEvent bool
 
 	metaMu sync.RWMutex
+	// sendMu 确保发送与关闭之间不发生数据竞争
+	sendMu sync.Mutex
 }
 
 // ClientOption 自定义客户端属性
@@ -384,6 +386,9 @@ func (h *Hub) sendPing() {
 
 // pushEventToClient 封装统一的非阻塞事件发送逻辑
 func (h *Hub) pushEventToClient(client *Client, event *Event, updatePing bool, countStats bool) (sent bool, backpressure bool) {
+	client.sendMu.Lock()
+	defer client.sendMu.Unlock()
+
 	if !client.shouldReceiveEvent(event) {
 		return false, false
 	}
@@ -442,9 +447,13 @@ func (h *Hub) shutdown() {
 // closeClient 安全地关闭客户端
 func (h *Hub) closeClient(client *Client) {
 	client.CloseOnce.Do(func() {
+		client.sendMu.Lock()
+		defer client.sendMu.Unlock()
+		// 先关闭 done，阻止后续发送分支命中 send case
+		// 再关闭消息/事件通道，避免 send 与 close 竞态
+		close(client.done)
 		close(client.MessageChan)
 		close(client.Disconnected)
-		close(client.done)
 	})
 }
 
@@ -473,9 +482,6 @@ func (h *Hub) Close() {
 	default:
 		close(h.done)
 	}
-
-	// 立即关闭所有客户端并清理状态
-	h.shutdown()
 }
 
 // IsRunning 检查 Hub 是否正在运行
