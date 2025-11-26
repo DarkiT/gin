@@ -1,17 +1,11 @@
 package gin
 
 import (
-	"crypto/hmac"
-	"crypto/md5"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"hash"
 	"math"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -20,70 +14,88 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/darkit/gin/cache"
+	"github.com/darkit/gin/pkg/errors"
+	"github.com/darkit/gin/pkg/sse"
+	"github.com/darkit/gin/types"
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
-)
-
-const (
-	SuccessCode   = 200 // 成功状态码
-	FailCode      = 400 // 失败状态码
-	ErrorCode     = 500 // 错误状态码
-	ForbiddenCode = 403 // 禁止访问状态码
-	NotFound      = 404 // 资源不存在状态码
+	"github.com/google/uuid"
+	"golang.org/x/net/publicsuffix"
+	"golang.org/x/text/language"
 )
 
 var (
-	domainSpecialSuffix = []string{
-		// 通用顶级域名 (gTLD)
-		"app", "art", "bid", "bio", "biz", "cab", "cam", "cfd", "com", "dev", "dog", "llc",
-		"lol", "mba", "moe", "mom", "net", "one", "org", "pro", "red", "rip", "sbs", "tel",
-		"top", "vin", "vip", "win", "xxx", "xyz",
-
-		// 国家代码顶级域名 (ccTLD)
-		"ac", "ae", "af", "ai", "am", "at", "be", "bz", "ca", "cc", "ch", "cl", "cm", "cn", "co", "cx", "cz", "de",
-		"dk", "ec", "es", "eu", "fm", "fr", "gd", "gg", "gl", "gr", "gs", "gy", "hk", "hn", "ht", "hu", "im", "in",
-		"io", "it", "je", "jp", "kr", "la", "lc", "li", "lt", "lu", "lv", "me", "mn", "ms", "mu", "mx", "nl", "nu",
-		"nz", "pe", "ph", "pl", "pm", "pt", "pw", "qa", "re", "ro", "ru", "sb", "sc", "se", "sg", "sh", "si", "so",
-		"sx", "tc", "tf", "tk", "tm", "to", "tv", "tw", "uk", "us", "vc", "vg", "wf", "ws", "yt",
-
-		// 新通用顶级域名 (New gTLDs)
-		"asia", "best", "blue", "cash", "club", "cool", "cyou", "express", "futbol", "game", "global", "group",
-		"immo", "info", "kiwi", "link", "live", "media", "mobi", "name", "network", "online", "pink", "plus",
-		"shop", "site", "space", "studio", "team", "tools", "wang", "wiki", "works",
+	// contextPool Context对象池，用于减少GC压力和提高性能
+	contextPool = sync.Pool{
+		New: func() interface{} {
+			return &Context{
+				pooled: true,
+			}
+		},
 	}
 
-	mimeType = map[string]string{
-		"xml":   "application/xml,text/xml,application/x-xml",
-		"json":  "application/json,text/x-json,application/jsonrequest,text/json",
-		"js":    "text/javascript,application/javascript,application/x-javascript",
-		"css":   "text/css",
-		"rss":   "application/rss+xml",
-		"yaml":  "application/x-yaml,text/yaml",
-		"atom":  "application/atom+xml",
-		"pdf":   "application/pdf",
-		"text":  "text/plain",
-		"image": "image/png,image/jpg,image/jpeg,image/pjpeg,image/gif,image/webp,image/*",
-		"csv":   "text/csv",
-		"html":  "text/html,application/xhtml+xml,*/*",
+	// componentsPool 组件对象池
+	componentsPool = sync.Pool{
+		New: func() interface{} {
+			return &contextComponents{}
+		},
 	}
 )
 
+// Context 增强的请求上下文，实现types.RequestContext接口
+// 优化版本：减少字段数量，使用延迟初始化，支持对象池化
 type Context struct {
 	*gin.Context
-	hub   *SSEHub
-	cache *cache.Cache[string, any] // 添加缓存字段
+
+	// 核心组件 - 使用指针减少内存占用，支持延迟初始化
+	components *contextComponents
+
+	// 性能优化字段
+	pooled bool // 标记是否来自对象池
+
+	// 中间件管理字段
+	nextFunc   func() // 自定义的next函数，用于中间件管理器
+	nextCalled bool   // 标记是否调用了Next方法
 }
 
-// 定义统一的响应结构
-type response struct {
-	Code int         `json:"code"`           // 状态码
-	Msg  string      `json:"msg"`            // 提示信息
-	Data interface{} `json:"data,omitempty"` // 数据
-	Url  string      `json:"url,omitempty"`  // 重定向URL地址
+func (c *Context) ginCtx() *gin.Context {
+	return c.Context
 }
+
+// contextComponents 上下文组件集合
+// 使用单独结构体减少Context主体大小，支持延迟初始化
+type contextComponents struct {
+	cache        *cache.Cache[string, any] // 缓存实例
+	errorHandler types.ErrorHandler        // 错误处理器
+	jwtAdapter   *JWTAdapter               // JWT适配器
+	sseHub       *sse.Hub                  // SSE中心
+}
+
+// GenerateRequestID 生成基于UUID v5标准的请求ID
+// 使用时间戳和随机数作为名称，确保唯一性
+func (c *Context) GenerateRequestID() string {
+	return generateRequestID()
+}
+
+// generateRequestID 包级别的请求ID生成函数
+func generateRequestID() string {
+	if id, err := uuid.NewRandom(); err == nil {
+		return id.String()
+	}
+
+	// uuid 生成失败时退化为随机字节 + 时间戳，保证稳定性
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err == nil {
+		return fmt.Sprintf("fallback-%s", base64.RawURLEncoding.EncodeToString(buf))
+	}
+
+	return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+}
+
+// 统一响应方法
 
 // Success 成功响应
 func (c *Context) Success(data interface{}, url ...string) {
@@ -91,11 +103,11 @@ func (c *Context) Success(data interface{}, url ...string) {
 	if len(url) > 0 {
 		respUrl = url[0]
 	}
-	c.JSON(http.StatusOK, response{
-		Code: SuccessCode,
+	c.JSON(http.StatusOK, types.Response{
+		Code: types.SuccessCode,
 		Msg:  "success",
 		Data: data,
-		Url:  respUrl,
+		URL:  respUrl,
 	})
 	c.Abort()
 }
@@ -106,11 +118,11 @@ func (c *Context) Fail(msg string, url ...string) {
 	if len(url) > 0 {
 		respUrl = url[0]
 	}
-	c.JSON(http.StatusBadRequest, response{
-		Code: FailCode,
+	c.JSON(http.StatusBadRequest, types.Response{
+		Code: types.FailCode,
 		Msg:  msg,
 		Data: nil,
-		Url:  respUrl,
+		URL:  respUrl,
 	})
 	c.Abort()
 }
@@ -121,12 +133,36 @@ func (c *Context) Error(msg string, url ...string) {
 	if len(url) > 0 {
 		respUrl = url[0]
 	}
-	c.JSON(http.StatusInternalServerError, response{
-		Code: ErrorCode,
+	c.JSON(http.StatusInternalServerError, types.Response{
+		Code: types.ErrorCode,
 		Msg:  msg,
 		Data: nil,
-		Url:  respUrl,
+		URL:  respUrl,
 	})
+	c.Abort()
+}
+
+// ErrorWithCode 使用错误处理包的错误响应
+func (c *Context) ErrorWithCode(err error) {
+	handler := c.getErrorHandler()
+	if handler != nil {
+		handler.HandleError(c, err)
+		return
+	}
+
+	// 默认错误处理
+	if appErr, ok := err.(*errors.Error); ok {
+		c.JSON(appErr.GetStatus(), types.Response{
+			Code: appErr.Code,
+			Msg:  appErr.Message,
+			Data: appErr.Data,
+		})
+	} else {
+		c.JSON(http.StatusInternalServerError, types.Response{
+			Code: types.ErrorCode,
+			Msg:  err.Error(),
+		})
+	}
 	c.Abort()
 }
 
@@ -139,11 +175,11 @@ func (c *Context) Forbidden(msg string, url ...string) {
 	if msg == "" {
 		msg = "没有权限访问"
 	}
-	c.JSON(http.StatusForbidden, response{
-		Code: ForbiddenCode,
+	c.JSON(http.StatusForbidden, types.Response{
+		Code: types.ForbiddenCode,
 		Msg:  msg,
 		Data: nil,
-		Url:  respUrl,
+		URL:  respUrl,
 	})
 	c.Abort()
 }
@@ -157,59 +193,28 @@ func (c *Context) NotFound(msg string, url ...string) {
 	if msg == "" {
 		msg = "资源不存在"
 	}
-	c.JSON(http.StatusNotFound, response{
-		Code: NotFound,
+	c.JSON(http.StatusNotFound, types.Response{
+		Code: types.NotFoundCode,
 		Msg:  msg,
 		Data: nil,
-		Url:  respUrl,
+		URL:  respUrl,
 	})
 	c.Abort()
 }
 
-// Response 自定义响应
-func (c *Context) Response(httpStatus, code int, msg string, data interface{}, url ...string) {
-	var respUrl string
-	if len(url) > 0 {
-		respUrl = url[0]
+// Unauthorized 未授权响应
+func (c *Context) Unauthorized(msg string) {
+	if msg == "" {
+		msg = "未授权访问"
 	}
-	c.JSON(httpStatus, response{
-		Code: code,
+	c.JSON(http.StatusUnauthorized, types.Response{
+		Code: http.StatusUnauthorized,
 		Msg:  msg,
-		Data: data,
-		Url:  respUrl,
 	})
 	c.Abort()
 }
 
-// SuccessWithMsg 成功响应（自定义消息）
-func (c *Context) SuccessWithMsg(msg string, data interface{}, url ...string) {
-	var respUrl string
-	if len(url) > 0 {
-		respUrl = url[0]
-	}
-	c.JSON(http.StatusOK, response{
-		Code: SuccessCode,
-		Msg:  msg,
-		Data: data,
-		Url:  respUrl,
-	})
-	c.Abort()
-}
-
-// FailWithData 失败响应（带数据）
-func (c *Context) FailWithData(msg string, data interface{}, url ...string) {
-	var respUrl string
-	if len(url) > 0 {
-		respUrl = url[0]
-	}
-	c.JSON(http.StatusBadRequest, response{
-		Code: FailCode,
-		Msg:  msg,
-		Data: data,
-		Url:  respUrl,
-	})
-	c.Abort()
-}
+// 请求信息获取方法
 
 // GetIP 获取请求IP
 func (c *Context) GetIP() string {
@@ -234,41 +239,14 @@ func (c *Context) GetUserAgent() string {
 	return c.GetHeader("User-Agent")
 }
 
-// GetToken 获取请求Token，支持多种来源和自定义键名
-// 依次从Header、URL参数、表单参数和Cookie中获取
-func (c *Context) GetToken(name ...string) string {
-	key := "Authorization"
-	cookieKey := JWTCookieKey
-
-	if len(name) > 0 {
-		key = name[0]
-		cookieKey = name[0]
-	}
-
-	// 从Header获取
-	token := c.GetHeader(key)
-	if token != "" {
-		token = strings.TrimPrefix(token, "Bearer ")
-		return token
-	}
-
-	// 从URL参数和表单获取
-	token = c.Param(key)
-	if token != "" {
-		return token
-	}
-
-	// 从Cookie获取
-	token, _ = c.Cookie(cookieKey)
-	return token
-}
+// 参数获取方法
 
 // Param 获取当前请求的变量
 func (c *Context) Param(param string, defaultValue ...string) string {
 	sources := []func(string) string{
-		c.Context.Param,
-		c.Context.Query,
-		c.Context.PostForm,
+		c.ginCtx().Param,
+		c.ginCtx().Query,
+		c.ginCtx().PostForm,
 	}
 	for _, source := range sources {
 		if val := source(param); val != "" {
@@ -281,12 +259,12 @@ func (c *Context) Param(param string, defaultValue ...string) string {
 	return ""
 }
 
-// ParamInt 获取当前请求的变量
+// ParamInt 获取当前请求的整数变量
 func (c *Context) ParamInt(param string, defaultValue ...int) int {
 	sources := []func(string) string{
-		c.Context.Param,
-		c.Context.Query,
-		c.Context.PostForm,
+		c.ginCtx().Param,
+		c.ginCtx().Query,
+		c.ginCtx().PostForm,
 	}
 	for _, source := range sources {
 		if val := source(param); val != "" {
@@ -317,22 +295,45 @@ func (c *Context) RequireParams(params ...string) bool {
 	return true
 }
 
-// Redirect 临时重定向
-func (c *Context) Redirect(location string) {
-	c.Context.Redirect(http.StatusTemporaryRedirect, location)
+// 数据绑定和验证方法
+
+// BindAndValidate 绑定并验证请求数据
+func (c *Context) BindAndValidate(obj interface{}) bool {
+	if err := c.ShouldBind(obj); err != nil {
+		c.ErrorWithCode(errors.WrapWithMessage(err, errors.ErrCodeInvalidParam, "参数绑定失败"))
+		return false
+	}
+	return true
 }
 
-// RedirectPermanent 永久重定向
-func (c *Context) RedirectPermanent(location string) {
-	c.Context.Redirect(http.StatusMovedPermanently, location)
+// BindJSON 绑定JSON请求数据并处理错误
+func (c *Context) BindJSON(obj interface{}) bool {
+	if err := c.ShouldBindJSON(obj); err != nil {
+		c.ErrorWithCode(errors.WrapWithMessage(err, errors.ErrCodeInvalidParam, "JSON参数绑定失败"))
+		return false
+	}
+	return true
 }
 
-// AllowCORS 允许跨域请求
-func (c *Context) AllowCORS() {
-	c.Header("Access-Control-Allow-Origin", "*")
-	c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-	c.Header("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization")
+// BindQuery 绑定查询参数并处理错误
+func (c *Context) BindQuery(obj interface{}) bool {
+	if err := c.ShouldBindQuery(obj); err != nil {
+		c.ErrorWithCode(errors.WrapWithMessage(err, errors.ErrCodeInvalidParam, "查询参数绑定失败"))
+		return false
+	}
+	return true
 }
+
+// Validate 验证数据
+func (c *Context) Validate(v types.Validator) bool {
+	if valid, msg := v.Validate(); !valid {
+		c.Fail(msg)
+		return false
+	}
+	return true
+}
+
+// 请求信息方法
 
 // Method 获取当前请求的方法
 func (c *Context) Method() string {
@@ -346,30 +347,10 @@ func (c *Context) Host() string {
 
 // Scheme 获取当前请求的协议
 func (c *Context) Scheme() string {
-	if c.IsSsl() {
+	if c.IsSSL() {
 		return "https"
 	}
 	return "http"
-}
-
-// Port 获取当前请求的端口
-func (c *Context) Port() string {
-	return c.Request.URL.Port()
-}
-
-// RemotePort 获取当前请求的REMOTE_PORT
-func (c *Context) RemotePort() string {
-	return c.Request.RemoteAddr
-}
-
-// Protocol 获取当前请求的协议
-func (c *Context) Protocol() string {
-	return c.Request.Proto
-}
-
-// ContentType 获取当前请求的CONTENT_TYPE
-func (c *Context) ContentType() string {
-	return c.Request.Header.Get("Content-Type")
 }
 
 // URL 获取当前请求的完整URL
@@ -382,21 +363,73 @@ func (c *Context) BaseURL() string {
 	return c.Request.URL.Path
 }
 
-// Time 获取当前请求的时间
-func (c *Context) Time() time.Time {
-	return time.Now() // 返回当前时间
+// IsSSL 判断是否是SSL
+func (c *Context) IsSSL() bool {
+	return c.Request.TLS != nil
+}
+
+// IsAjax 判断是否是Ajax请求
+func (c *Context) IsAjax() bool {
+	return c.GetHeader("X-Requested-With") == "XMLHttpRequest"
+}
+
+// IsJSON 判断是否是JSON请求
+func (c *Context) IsJSON() bool {
+	return c.Type() == "json"
 }
 
 // Type 获取当前请求的资源类型
+// 使用标准库 mime 包解析 Accept 头,更加标准和高效
 func (c *Context) Type() string {
 	accept := c.GetHeader("Accept")
-	array := strings.Split(accept, ",")
-	for k, val := range mimeType {
-		if strings.Contains(val, array[0]) {
-			return k
-		}
+	if accept == "" {
+		return ""
 	}
-	return ""
+
+	// 使用 mime.ParseMediaType 解析第一个媒体类型
+	// Accept 头格式: "type/subtype; param=value, type2/subtype2"
+	mediaTypes := strings.Split(accept, ",")
+	if len(mediaTypes) == 0 {
+		return ""
+	}
+
+	// 解析第一个媒体类型(优先级最高)
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(mediaTypes[0]))
+	if err != nil {
+		return ""
+	}
+
+	// 映射标准 MIME 类型到简化类型名
+	switch {
+	case mediaType == "application/json" || mediaType == "text/json":
+		return "json"
+	case mediaType == "application/xml" || mediaType == "text/xml":
+		return "xml"
+	case mediaType == "text/html" || mediaType == "application/xhtml+xml":
+		return "html"
+	case mediaType == "text/plain":
+		return "text"
+	case mediaType == "application/javascript" || mediaType == "text/javascript":
+		return "js"
+	case mediaType == "text/css":
+		return "css"
+	case mediaType == "application/pdf":
+		return "pdf"
+	case mediaType == "text/csv":
+		return "csv"
+	case mediaType == "application/rss+xml":
+		return "rss"
+	case mediaType == "application/atom+xml":
+		return "atom"
+	case mediaType == "application/x-yaml" || mediaType == "text/yaml":
+		return "yaml"
+	case strings.HasPrefix(mediaType, "image/"):
+		return "image"
+	case mediaType == "*/*":
+		return "html" // 默认返回 html
+	default:
+		return ""
+	}
 }
 
 // Domain 获取当前包含协议的域名
@@ -404,26 +437,9 @@ func (c *Context) Domain() string {
 	return c.Scheme() + "://" + c.Host()
 }
 
-// SubDomain 获取当前访问的子域名
-func (c *Context) SubDomain() string {
-	rootDomain := c.RootDomain()
-	if rootDomain == "" {
-		return ""
-	}
-	sub := strings.TrimSuffix(c.Host(), rootDomain)
-	return strings.Trim(sub, ".")
-}
-
-// PanDomain 获取当前访问的泛域名
-func (c *Context) PanDomain() string {
-	subDomain := c.SubDomain()
-	if subDomain == "" {
-		return ""
-	}
-	return subDomain + "." + c.RootDomain()
-}
-
 // RootDomain 获取当前访问的根域名
+// 使用 golang.org/x/net/publicsuffix 获取 eTLD+1 (有效顶级域名+1级)
+// 例如: www.example.com -> example.com, blog.example.co.uk -> example.co.uk
 func (c *Context) RootDomain() string {
 	host := c.Host()
 	if host == "" {
@@ -433,128 +449,308 @@ func (c *Context) RootDomain() string {
 	// 尝试分离主机名和端口号
 	hostOnly, _, err := net.SplitHostPort(host)
 	if err != nil {
-		// 如果没有端口号，直接使用整个主机名
+		// 没有端口号,使用原始 host
 		hostOnly = host
 	}
 
-	// 检查是否是IP地址
-	parsedIP := net.ParseIP(hostOnly)
-	if parsedIP != nil {
-		return "" // 如果是IP地址，直接返回空字符串
+	// 移除 IPv6 的方括号
+	hostOnly = strings.Trim(hostOnly, "[]")
+
+	// 检查是否是 IP 地址
+	if net.ParseIP(hostOnly) != nil {
+		return "" // IP 地址没有域名
 	}
 
-	items := strings.Split(hostOnly, ".") // 将主机名按点分割
-	if len(items) < 2 {
-		return hostOnly // 如果没有点，返回主机名
+	// 使用 publicsuffix 包获取 eTLD+1 (有效顶级域名+1)
+	// 这会正确处理 .com, .co.uk, .com.cn 等各种公共后缀
+	eTLDPlusOne, err := publicsuffix.EffectiveTLDPlusOne(hostOnly)
+	if err != nil {
+		// 如果解析失败(例如输入就是 TLD 本身),返回原始主机名
+		return hostOnly
 	}
 
-	count := len(items)
-	var root string
-	if count > 1 {
-		// 默认取最后两个部分作为根域名
-		root = items[count-2] + "." + items[count-1]
-		// 处理特殊后缀情况
-		if count > 2 && c.containsSpecialSuffix(items[count-2]) {
-			root = items[count-3] + "." + root
-		}
-	} else {
-		// 如果只有一个部分，直接使用该部分
-		root = items[0]
-	}
-	return root
+	return eTLDPlusOne
 }
 
-// 检查是否包含特殊后缀
-func (c *Context) containsSpecialSuffix(suffix string) bool {
-	for _, specialSuffix := range domainSpecialSuffix {
-		if suffix == specialSuffix {
+// 组件访问辅助方法 - 支持延迟初始化
+
+// getComponents 获取组件集合，支持延迟初始化
+func (c *Context) getComponents() *contextComponents {
+	if c.components == nil {
+		c.components = componentsPool.Get().(*contextComponents)
+	}
+	return c.components
+}
+
+// getCache 获取缓存实例
+func (c *Context) getCache() *cache.Cache[string, any] {
+	return c.getComponents().cache
+}
+
+// getErrorHandler 获取错误处理器
+func (c *Context) getErrorHandler() types.ErrorHandler {
+	return c.getComponents().errorHandler
+}
+
+// getJWTAdapter 获取JWT适配器
+func (c *Context) getJWTAdapter() *JWTAdapter {
+	return c.getComponents().jwtAdapter
+}
+
+// getSSEHub 获取SSE中心
+func (c *Context) getSSEHub() *sse.Hub {
+	return c.getComponents().sseHub
+}
+
+// 缓存方法 - 使用延迟初始化优化性能
+
+// CacheSet 设置缓存值
+func (c *Context) CacheSet(key string, value interface{}, duration ...time.Duration) {
+	if cache := c.getCache(); cache != nil {
+		cache.Set(key, value, duration...)
+	}
+}
+
+// CacheGet 从缓存获取值
+func (c *Context) CacheGet(key string) (interface{}, bool) {
+	if cache := c.getCache(); cache != nil {
+		return cache.Get(key)
+	}
+	return nil, false
+}
+
+// CacheDelete 从缓存删除值
+func (c *Context) CacheDelete(key string) {
+	if cache := c.getCache(); cache != nil {
+		cache.Delete(key)
+	}
+}
+
+// CacheHas 检查缓存中是否存在键
+func (c *Context) CacheHas(key string) bool {
+	if cache := c.getCache(); cache != nil {
+		return cache.Has(key)
+	}
+	return false
+}
+
+// CacheClear 清空缓存
+func (c *Context) CacheClear() {
+	if cache := c.getCache(); cache != nil {
+		cache.Clear()
+	}
+}
+
+// JWT方法 - 使用JWT适配器
+
+// SetJWT 设置JWT令牌到Cookie
+func (c *Context) SetJWT(token string, maxAge int) {
+	c.SetCookie(types.JWTCookieKey, token, maxAge, "/", c.RootDomain(), c.IsSSL(), true)
+}
+
+// GetJWT 获取JWT令牌
+func (c *Context) GetJWT() string {
+	// 从Header获取
+	token := c.GetHeader(types.JWTHeaderKey)
+	if token != "" {
+		return strings.TrimPrefix(token, types.JWTPrefix)
+	}
+
+	// 从Query获取
+	token = c.Query(types.JWTQueryKey)
+	if token != "" {
+		return token
+	}
+
+	// 从Cookie获取
+	token, _ = c.Cookie(types.JWTCookieKey)
+	return token
+}
+
+// JWTClaimString 获取JWT载荷中的字符串声明
+func (c *Context) JWTClaimString(key string) string {
+	if key == "" {
+		return ""
+	}
+	payload := c.GetJWTPayload()
+	if payload == nil {
+		return ""
+	}
+	if value, exists := payload[key]; exists {
+		switch v := value.(type) {
+		case string:
+			return v
+		case fmt.Stringer:
+			return v.String()
+		default:
+			return fmt.Sprintf("%v", v)
+		}
+	}
+	return ""
+}
+
+// JWTClaimStrings 获取JWT载荷中的字符串数组声明
+func (c *Context) JWTClaimStrings(key string) []string {
+	if key == "" {
+		return nil
+	}
+	payload := c.GetJWTPayload()
+	if payload == nil {
+		return nil
+	}
+	value, exists := payload[key]
+	if !exists {
+		return nil
+	}
+	switch v := value.(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			switch val := item.(type) {
+			case string:
+				result = append(result, val)
+			default:
+				result = append(result, fmt.Sprintf("%v", val))
+			}
+		}
+		return result
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []string{v}
+	default:
+		return []string{fmt.Sprintf("%v", v)}
+	}
+}
+
+// AuthInfo 解析JWT载荷为 AuthInfo 结构
+func (c *Context) AuthInfo() (*types.AuthInfo, bool) {
+	payload := c.GetJWTPayload()
+	if payload == nil {
+		return nil, false
+	}
+	info := &types.AuthInfo{
+		UserID:   c.JWTClaimString("user_id"),
+		Username: c.JWTClaimString("username"),
+		Email:    c.JWTClaimString("email"),
+		Roles:    c.JWTClaimStrings("roles"),
+		Extra:    make(types.H),
+	}
+	for k, v := range payload {
+		info.Extra[k] = v
+	}
+	return info, true
+}
+
+// HasRole 判断当前JWT是否包含指定角色
+func (c *Context) HasRole(role string) bool {
+	roles := c.JWTClaimStrings("roles")
+	if len(roles) == 0 {
+		return false
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return false
+	}
+	for _, r := range roles {
+		if strings.ToLower(r) == role {
 			return true
 		}
 	}
 	return false
 }
 
-// Ext 获取当前URL的访问后缀
-func (c *Context) Ext() string {
-	return filepath.Ext(c.BaseURL())
+// HasAllRoles 判断是否同时拥有所有指定角色
+func (c *Context) HasAllRoles(roles ...string) bool {
+	if len(roles) == 0 {
+		return false
+	}
+	available := c.JWTClaimStrings("roles")
+	if len(available) == 0 {
+		return false
+	}
+	roleMap := make(map[string]struct{}, len(available))
+	for _, r := range available {
+		roleMap[strings.ToLower(strings.TrimSpace(r))] = struct{}{}
+	}
+	for _, required := range roles {
+		if required == "" {
+			continue
+		}
+		if _, ok := roleMap[strings.ToLower(strings.TrimSpace(required))]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
-// IsGet 判断是否GET请求
-func (c *Context) IsGet() bool {
-	return c.Request.Method == MethodGet
+// HasAnyRole 判断是否拥有任意一个指定角色
+func (c *Context) HasAnyRole(roles ...string) bool {
+	for _, role := range roles {
+		if c.HasRole(role) {
+			return true
+		}
+	}
+	return false
 }
 
-// IsHead 判断是否Head请求
-func (c *Context) IsHead() bool {
-	return c.Request.Method == MethodHead
+// GenerateJWT 生成JWT令牌（需要JWT适配器）
+func (c *Context) GenerateJWT(payload JWTPayload) (string, error) {
+	adapter := c.getJWTAdapter()
+	if adapter == nil {
+		return "", fmt.Errorf("JWT适配器未初始化")
+	}
+	return adapter.GenerateToken(payload)
 }
 
-// IsPut 判断是否Put请求
-func (c *Context) IsPut() bool {
-	return c.Request.Method == MethodPut
+// ValidateJWT 验证JWT令牌（需要JWT适配器）
+func (c *Context) ValidateJWT(token ...string) (JWTPayload, error) {
+	adapter := c.getJWTAdapter()
+	if adapter == nil {
+		return nil, fmt.Errorf("JWT适配器未初始化")
+	}
+
+	tk := c.GetJWT()
+	if len(token) > 0 {
+		tk = token[0]
+	}
+	return adapter.ValidateToken(tk)
 }
 
-// IsPost 判断是否Post请求
-func (c *Context) IsPost() bool {
-	return c.Request.Method == MethodPost
+// RequireJWT 要求JWT令牌有效并返回载荷
+func (c *Context) RequireJWT(secretKey ...string) (JWTPayload, bool) {
+	adapter := c.getJWTAdapter()
+	if adapter == nil {
+		c.Unauthorized("JWT适配器未初始化")
+		return nil, false
+	}
+
+	// 获取JWT令牌
+	token := c.GetJWT()
+	if token == "" {
+		c.Unauthorized("未授权访问，请先登录")
+		return nil, false
+	}
+
+	// 验证JWT令牌
+	payload, err := adapter.ValidateToken(token)
+	if err != nil {
+		c.Unauthorized("未授权访问，请先登录")
+		return nil, false
+	}
+
+	return payload, true
 }
 
-// IsPatch 判断是否Patch请求
-func (c *Context) IsPatch() bool {
-	return c.Request.Method == MethodPatch
-}
-
-// IsDelete 判断是否Delete请求
-func (c *Context) IsDelete() bool {
-	return c.Request.Method == MethodDelete
-}
-
-// IsConnect 判断是否Connect请求
-func (c *Context) IsConnect() bool {
-	return c.Request.Method == MethodConnect
-}
-
-// IsOptions 判断是否Options请求
-func (c *Context) IsOptions() bool {
-	return c.Request.Method == MethodOptions
-}
-
-// IsTrace 判断是否Trace请求
-func (c *Context) IsTrace() bool {
-	return c.Request.Method == MethodTrace
-}
-
-// IsAjax 判断是否是Ajax请求
-func (c *Context) IsAjax() bool {
-	return c.GetHeader("X-Requested-With") == "XMLHttpRequest"
-}
-
-// IsJson 判断是否是Json请求
-func (c *Context) IsJson() bool {
-	return c.Type() == "json"
-}
-
-// IsPjax 判断是否是Pjax请求
-func (c *Context) IsPjax() bool {
-	return c.GetHeader("HTTP_X_PJAX") != ""
-}
-
-// IsSsl 判断是否是SSL
-func (c *Context) IsSsl() bool {
-	return c.Request.TLS != nil
-}
-
-// UploadConfig 文件上传相关方法
-type UploadConfig struct {
-	AllowedExts []string // 允许的文件扩展名
-	MaxSize     int64    // 最大文件大小（字节）
-	SavePath    string   // 保存路径
-}
+// 文件处理方法
 
 // ValidateFile 验证上传文件
-func (c *Context) ValidateFile(file *multipart.FileHeader, config UploadConfig) error {
+func (c *Context) ValidateFile(file *multipart.FileHeader, config types.UploadConfig) error {
 	if config.MaxSize > 0 && file.Size > config.MaxSize {
-		return fmt.Errorf("文件大小超过限制")
+		return errors.New(errors.ErrCodeInvalidParam).WithMessage("文件大小超过限制")
 	}
 
 	ext := strings.ToLower(filepath.Ext(file.Filename))
@@ -567,70 +763,60 @@ func (c *Context) ValidateFile(file *multipart.FileHeader, config UploadConfig) 
 			}
 		}
 		if !allowed {
-			return fmt.Errorf("不支持的文件类型")
+			return errors.New(errors.ErrCodeInvalidParam).WithMessage("不支持的文件类型")
 		}
 	}
 	return nil
 }
 
 // SaveUploadedFile 保存上传文件
-func (c *Context) SaveUploadedFile(file *multipart.FileHeader, config UploadConfig) (string, error) {
+func (c *Context) SaveUploadedFile(file *multipart.FileHeader, config types.UploadConfig) (string, error) {
 	if err := c.ValidateFile(file, config); err != nil {
 		return "", err
 	}
 
 	ext := filepath.Ext(file.Filename)
-
-	hash := md5.Sum([]byte(file.Filename))
-	newFileName := fmt.Sprintf("%s%s", hex.EncodeToString(hash[:]), ext)
+	newFileName := fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
 	savePath := filepath.Join(config.SavePath, newFileName)
 
 	if err := os.MkdirAll(config.SavePath, 0o755); err != nil {
-		return "", err
+		return "", errors.Wrap(err, errors.ErrCodeInternal).WithMessage("创建目录失败")
 	}
 
 	if err := c.Context.SaveUploadedFile(file, savePath); err != nil {
-		return "", err
+		return "", errors.Wrap(err, errors.ErrCodeInternal).WithMessage("保存文件失败")
 	}
 
 	return newFileName, nil
 }
 
-// Pagination 分页信息结构体
-type Pagination struct {
-	CurrentPage int   `json:"current_page"`          // 当前页码，使用下划线风格的JSON标签
-	PageSize    int   `json:"page_size"`             // 每页数量
-	TotalCount  int64 `json:"total_count"`           // 总数据量，使用更准确的命名
-	TotalPages  int   `json:"total_pages,omitempty"` // 总页数（可选）
+// StreamFile 以 attachment 形式发送文件
+func (c *Context) StreamFile(filepath string, filename string) {
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", url.PathEscape(filename)))
+	c.File(filepath)
 }
 
-// ListResponse 通用列表响应结构体
-type ListResponse struct {
-	Data       any        `json:"data"`       // 数据列表，使用更通用的名称
-	Pagination Pagination `json:"pagination"` // 分页信息，使用更专业的命名
-}
+// 分页响应方法
 
-// PageResponse 分页响应方法，适配新的结构体
-func (c *Context) PageResponse(list any, totalCount int64, currentPage, pageSize int) {
-	// 处理pageSize为0的情况
+// PageResponse 分页响应方法
+func (c *Context) PageResponse(list interface{}, totalCount int64, currentPage, pageSize int) {
 	if pageSize <= 0 {
-		pageSize = 10 // 设置一个默认值
+		pageSize = 10
 	}
 
-	// 计算总页数
 	totalPages := int(math.Ceil(float64(totalCount) / float64(pageSize)))
 
-	// 确保当前页有效
 	if currentPage <= 0 {
 		currentPage = 1
 	}
 
-	c.JSON(http.StatusOK, response{
-		Code: SuccessCode,
+	c.JSON(http.StatusOK, types.Response{
+		Code: types.SuccessCode,
 		Msg:  "success",
-		Data: ListResponse{
+		Data: types.ListResponse{
 			Data: list,
-			Pagination: Pagination{
+			Pagination: types.Pagination{
 				CurrentPage: currentPage,
 				PageSize:    pageSize,
 				TotalCount:  totalCount,
@@ -641,24 +827,69 @@ func (c *Context) PageResponse(list any, totalCount int64, currentPage, pageSize
 	c.Abort()
 }
 
-// BuildUrl 创建一个 urlBuilder 实例
-func (c *Context) BuildUrl(path string) *urlBuilder {
-	return &urlBuilder{
+// Paginate 分页参数处理
+func (c *Context) Paginate(defaultPageSize ...int) (page, pageSize int) {
+	page = 1
+	pageSize = 10
+
+	if len(defaultPageSize) > 0 && defaultPageSize[0] > 0 {
+		pageSize = defaultPageSize[0]
+	}
+
+	if p := c.Query("page"); p != "" {
+		if val, err := strconv.Atoi(p); err == nil && val > 0 {
+			page = val
+		}
+	}
+
+	if ps := c.Query("page_size"); ps != "" {
+		if val, err := strconv.Atoi(ps); err == nil && val > 0 {
+			pageSize = val
+		}
+	}
+
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	return page, pageSize
+}
+
+// PaginateResponse 组合 Paginate 与 PageResponse
+func (c *Context) PaginateResponse(fetch func(page, size int) (interface{}, int64)) {
+	page, size := c.Paginate()
+	data, total := fetch(page, size)
+	c.PageResponse(data, total, page, size)
+}
+
+// URL构建方法
+
+// BuildURL 创建一个 URLBuilder 实例
+func (c *Context) BuildURL(path string) *URLBuilder {
+	return &URLBuilder{
 		scheme: c.Scheme(),
-		domain: "",
 		path:   path,
-		ext:    "",
 	}
 }
 
-// urlBuilder 结构体用于构建 URL
-type urlBuilder struct {
+// URLBuilder 结构体用于构建 URL
+type URLBuilder struct {
 	domain, path, ext, scheme string
 	params                    H
+	err                       error
 }
 
 // Set 设置 URL 的Query参数
-func (ub *urlBuilder) Set(query string, value any) *urlBuilder {
+func (ub *URLBuilder) Set(query string, value interface{}) *URLBuilder {
+	if ub.err != nil {
+		return ub
+	}
+
+	if query == "" {
+		ub.err = fmt.Errorf("查询参数键不能为空")
+		return ub
+	}
+
 	if ub.params == nil {
 		ub.params = H{}
 	}
@@ -667,25 +898,35 @@ func (ub *urlBuilder) Set(query string, value any) *urlBuilder {
 }
 
 // Scheme 设置 URL 的访问协议
-func (ub *urlBuilder) Scheme(scheme string) *urlBuilder {
+func (ub *URLBuilder) Scheme(scheme string) *URLBuilder {
+	if ub.err != nil {
+		return ub
+	}
 	ub.scheme = scheme
 	return ub
 }
 
 // Domain 设置是否使用域名
-func (ub *urlBuilder) Domain(domain string) *urlBuilder {
+func (ub *URLBuilder) Domain(domain string) *URLBuilder {
+	if ub.err != nil {
+		return ub
+	}
+
+	if domain == "" {
+		ub.err = fmt.Errorf("域名不能为空")
+		return ub
+	}
+
 	ub.domain = domain
 	return ub
 }
 
-// Suffix 设置 URL 的后缀
-func (ub *urlBuilder) Suffix(suffix string) *urlBuilder {
-	ub.ext = suffix
-	return ub
-}
+// Build 生成最终的 URL
+func (ub *URLBuilder) Build() string {
+	if ub.err != nil {
+		return ""
+	}
 
-// Builder 生成最终的 URL
-func (ub *urlBuilder) Builder() string {
 	u := &url.URL{}
 
 	if ub.domain != "" {
@@ -702,793 +943,94 @@ func (ub *urlBuilder) Builder() string {
 	}
 	u.Path = ub.path
 
-	query := u.Query()
-	for key, value := range ub.params {
-		query.Set(key, fmt.Sprintf("%v", value))
+	if len(ub.params) > 0 {
+		query := u.Query()
+		for key, value := range ub.params {
+			query.Set(key, fmt.Sprintf("%v", value))
+		}
+		u.RawQuery = query.Encode()
 	}
-	u.RawQuery = query.Encode()
 
 	return u.String()
 }
 
-// 增加常用的参数绑定和验证方法
+// SSE方法
 
-// BindAndValidate 绑定并验证请求数据
-func (c *Context) BindAndValidate(obj interface{}) bool {
-	if err := c.ShouldBind(obj); err != nil {
-		c.Fail(fmt.Sprintf("参数绑定失败: %v", err))
-		return false
+// NewSSEClient 创建新的 SSE 客户端连接
+func (c *Context) NewSSEClient(filters ...string) *sse.Client {
+	return c.NewSSEClientWithOptions(filters, nil...)
+}
+
+// NewSSEClientWithOptions 创建带选项的 SSE 客户端
+func (c *Context) NewSSEClientWithOptions(filters []string, opts ...sse.ClientOption) *sse.Client {
+	hub := c.getSSEHub()
+	if hub == nil {
+		return nil
 	}
-	return true
+
+	client := sse.NewClient(c.Writer, c.Request, filters...)
+	sse.ApplyClientOptions(client, opts...)
+	hub.RegisterClient(client)
+	return client
 }
 
-// BindJSON 绑定JSON请求数据并处理错误
-func (c *Context) BindJSON(obj interface{}) bool {
-	if err := c.ShouldBindJSON(obj); err != nil {
-		c.Fail(fmt.Sprintf("JSON参数绑定失败: %v", err))
-		return false
-	}
-	return true
-}
-
-// BindQuery 绑定查询参数并处理错误
-func (c *Context) BindQuery(obj interface{}) bool {
-	if err := c.ShouldBindQuery(obj); err != nil {
-		c.Fail(fmt.Sprintf("查询参数绑定失败: %v", err))
-		return false
-	}
-	return true
-}
-
-// BindForm 绑定表单参数并处理错误
-func (c *Context) BindForm(obj interface{}) bool {
-	if err := c.ShouldBindWith(obj, binding.Form); err != nil {
-		c.Fail(fmt.Sprintf("表单参数绑定失败: %v", err))
-		return false
-	}
-	return true
-}
-
-// BindHeader 绑定Header参数并处理错误
-func (c *Context) BindHeader(obj interface{}) bool {
-	if err := c.ShouldBindHeader(obj); err != nil {
-		c.Fail(fmt.Sprintf("Header参数绑定失败: %v", err))
-		return false
-	}
-	return true
-}
-
-// BindUri 绑定URI参数并处理错误
-func (c *Context) BindUri(obj interface{}) bool {
-	if err := c.ShouldBindUri(obj); err != nil {
-		c.Fail(fmt.Sprintf("URI参数绑定失败: %v", err))
-		return false
-	}
-	return true
-}
-
-// 增加JWT相关方法
-
-// JWT常量，保留公开因为它们是API契约的一部分
-const (
-	JWTHeaderKey = "Authorization"
-	JWTQueryKey  = "token"
-	JWTCookieKey = "token"
-	JWTPrefix    = "Bearer "
-
-	// JWT算法
-	JWTAlgHS256 = "HS256" // HMAC-SHA256
-	JWTAlgHS384 = "HS384" // HMAC-SHA384
-	JWTAlgHS512 = "HS512" // HMAC-SHA512
-
-	// JWT标准声明
-	JWTClaimIss = "iss" // 签发者
-	JWTClaimSub = "sub" // 主题
-	JWTClaimAud = "aud" // 受众
-	JWTClaimExp = "exp" // 过期时间
-	JWTClaimNbf = "nbf" // 生效时间
-	JWTClaimIat = "iat" // 签发时间
-	JWTClaimJti = "jti" // JWT ID
-)
-
-// jwtUtil JWT工具类
-type jwtUtil struct {
-	SecretKey []byte // 密钥
-	Alg       string // 算法
-}
-
-// 创建默认的JWT工具
-func newJWTUtil(secretKey string) *jwtUtil {
-	return &jwtUtil{
-		SecretKey: []byte(secretKey),
-		Alg:       JWTAlgHS256,
+// BroadcastSSE 广播SSE事件
+func (c *Context) BroadcastSSE(event *sse.Event) {
+	if hub := c.getSSEHub(); hub != nil {
+		hub.Broadcast(event)
 	}
 }
 
-// jwtHeader JWT头部
-type jwtHeader struct {
-	Alg string `json:"alg"` // 算法
-	Typ string `json:"typ"` // 类型
+// 安全相关方法
+
+// CSRFToken 生成CSRF令牌
+func (c *Context) CSRFToken() string {
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(token)
 }
 
-// JWTPayload JWT载荷
-type JWTPayload = H
-
-// SetIssuer 设置JWT标准声明
-func (p JWTPayload) SetIssuer(issuer string) JWTPayload {
-	p[JWTClaimIss] = issuer
-	return p
-}
-
-func (p JWTPayload) SetSubject(subject string) JWTPayload {
-	p[JWTClaimSub] = subject
-	return p
-}
-
-func (p JWTPayload) SetAudience(audience string) JWTPayload {
-	p[JWTClaimAud] = audience
-	return p
-}
-
-func (p JWTPayload) SetExpiresAt(expiresAt time.Time) JWTPayload {
-	p[JWTClaimExp] = expiresAt.Unix()
-	return p
-}
-
-func (p JWTPayload) SetNotBefore(notBefore time.Time) JWTPayload {
-	p[JWTClaimNbf] = notBefore.Unix()
-	return p
-}
-
-func (p JWTPayload) SetIssuedAt(issuedAt time.Time) JWTPayload {
-	p[JWTClaimIat] = issuedAt.Unix()
-	return p
-}
-
-func (p JWTPayload) SetJWTID(jwtID string) JWTPayload {
-	p[JWTClaimJti] = jwtID
-	return p
-}
-
-// GetIssuer 获取JWT签发者
-func (p JWTPayload) GetIssuer() string {
-	if iss, ok := p[JWTClaimIss].(string); ok {
-		return iss
-	}
-	return ""
-}
-
-// GetSubject 获取JWT主题
-func (p JWTPayload) GetSubject() string {
-	if sub, ok := p[JWTClaimSub].(string); ok {
-		return sub
-	}
-	return ""
-}
-
-// GetAudience 获取JWT受众
-func (p JWTPayload) GetAudience() string {
-	if aud, ok := p[JWTClaimAud].(string); ok {
-		return aud
-	}
-	return ""
-}
-
-// GetExpiresAt 获取JWT过期时间
-func (p JWTPayload) GetExpiresAt() time.Time {
-	if exp, ok := p[JWTClaimExp].(float64); ok {
-		return time.Unix(int64(exp), 0)
-	}
-	return time.Time{}
-}
-
-// GetNotBefore 获取JWT生效时间
-func (p JWTPayload) GetNotBefore() time.Time {
-	if nbf, ok := p[JWTClaimNbf].(float64); ok {
-		return time.Unix(int64(nbf), 0)
-	}
-	return time.Time{}
-}
-
-// GetIssuedAt 获取JWT签发时间
-func (p JWTPayload) GetIssuedAt() time.Time {
-	if iat, ok := p[JWTClaimIat].(float64); ok {
-		return time.Unix(int64(iat), 0)
-	}
-	return time.Time{}
-}
-
-// GetJWTID 获取JWT ID
-func (p JWTPayload) GetJWTID() string {
-	if jti, ok := p[JWTClaimJti].(string); ok {
-		return jti
-	}
-	return ""
-}
-
-// 生成随机JWT ID
-func generateJWTID() string {
-	b := make([]byte, 16)
-	_, err := rand.Read(b)
-	if err != nil {
-		// 如果生成随机数失败，使用时间戳
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
-}
-
-// 生成JWT令牌
-func (j *jwtUtil) generateToken(payload JWTPayload) (string, error) {
-	// 创建头部
-	header := jwtHeader{
-		Alg: j.Alg,
-		Typ: "JWT",
-	}
-
-	// 设置默认的签发时间和JWT ID (如果未设置)
-	if _, ok := payload[JWTClaimIat]; !ok {
-		payload.SetIssuedAt(time.Now())
-	}
-
-	if _, ok := payload[JWTClaimJti]; !ok {
-		payload.SetJWTID(generateJWTID())
-	}
-
-	// 序列化头部和载荷
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", fmt.Errorf("序列化JWT头部失败: %w", err)
-	}
-
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("序列化JWT载荷失败: %w", err)
-	}
-
-	// Base64URL编码
-	headerBase64 := base64URLEncode(headerJSON)
-	payloadBase64 := base64URLEncode(payloadJSON)
-
-	// 计算签名
-	signatureBase := headerBase64 + "." + payloadBase64
-	signature := j.sign(signatureBase)
-
-	// 拼接JWT令牌
-	token := signatureBase + "." + base64URLEncode(signature)
-
-	return token, nil
-}
-
-// 验证JWT令牌并返回载荷
-func (j *jwtUtil) validateToken(token string) (JWTPayload, error) {
-	// 解析令牌
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("无效的JWT格式")
-	}
-
-	headerBase64, payloadBase64, signatureBase64 := parts[0], parts[1], parts[2]
-
-	// 验证签名
-	signatureBase := headerBase64 + "." + payloadBase64
-	expectedSignature := j.sign(signatureBase)
-
-	signature, err := base64URLDecode(signatureBase64)
-	if err != nil {
-		return nil, fmt.Errorf("无效的签名编码: %w", err)
-	}
-
-	if !hmac.Equal(signature, expectedSignature) {
-		return nil, fmt.Errorf("签名验证失败")
-	}
-
-	// 解析载荷
-	payloadJSON, err := base64URLDecode(payloadBase64)
-	if err != nil {
-		return nil, fmt.Errorf("无效的载荷编码: %w", err)
-	}
-
-	var payload JWTPayload
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return nil, fmt.Errorf("解析载荷失败: %w", err)
-	}
-
-	// 验证过期时间
-	if exp, ok := payload[JWTClaimExp].(float64); ok {
-		if time.Now().Unix() > int64(exp) {
-			return nil, fmt.Errorf("令牌已过期")
-		}
-	}
-
-	// 验证生效时间
-	if nbf, ok := payload[JWTClaimNbf].(float64); ok {
-		if time.Now().Unix() < int64(nbf) {
-			return nil, fmt.Errorf("令牌尚未生效")
-		}
-	}
-
-	return payload, nil
-}
-
-// 签名
-func (j *jwtUtil) sign(data string) []byte {
-	var h hash.Hash
-
-	switch j.Alg {
-	case JWTAlgHS384:
-		h = hmac.New(sha512.New384, j.SecretKey)
-	case JWTAlgHS512:
-		h = hmac.New(sha512.New, j.SecretKey)
-	default: // JWTAlgHS256
-		h = hmac.New(sha256.New, j.SecretKey)
-	}
-
-	h.Write([]byte(data))
-	return h.Sum(nil)
-}
-
-// Base64URL编码H
-func base64URLEncode(data []byte) string {
-	return strings.TrimRight(base64.URLEncoding.EncodeToString(data), "=")
-}
-
-// Base64URL解码H
-func base64URLDecode(s string) ([]byte, error) {
-	// 添加填充
-	if m := len(s) % 4; m != 0 {
-		s += strings.Repeat("=", 4-m)
-	}
-
-	return base64.URLEncoding.DecodeString(s)
-}
-
-// 添加到Context的JWT方法
-
-// JWTOptions JWT处理选项
-type JWTOptions struct {
-	Validate     bool   // 是否验证令牌
-	RequireToken bool   // 是否要求令牌存在
-	SecretKey    string // 密钥（验证时需要）
-	AutoRespond  bool   // 失败时是否自动响应401
-}
-
-// SetJWT 设置JWT令牌到Cookie
-func (c *Context) SetJWT(token string, maxAge int) {
-	c.SetCookie(JWTCookieKey, token, maxAge, "/", c.RootDomain(), c.IsSsl(), true)
-}
-
-// GetJWT 获取JWT令牌(从标准JWT位置)
-func (c *Context) GetJWT() string {
-	// 从Header获取
-	token := c.GetHeader(JWTHeaderKey)
-	if token != "" {
-		return strings.TrimPrefix(token, JWTPrefix)
-	}
-
-	// 从Query获取
-	token = c.Query(JWTQueryKey)
-	if token != "" {
-		return token
-	}
-
-	// 从Cookie获取
-	token, _ = c.Cookie(JWTCookieKey)
+// SetCSRFToken 设置CSRF令牌
+func (c *Context) SetCSRFToken() string {
+	token := c.CSRFToken()
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie("csrf_token", token, 3600, "/", c.RootDomain(), c.IsSSL(), true)
 	return token
-}
-
-// GenerateJWT 生成JWT令牌
-func (c *Context) GenerateJWT(secretKey string, payload JWTPayload) (string, error) {
-	jwt := newJWTUtil(secretKey)
-	return jwt.generateToken(payload)
-}
-
-// ValidateJWT 验证JWT令牌
-func (c *Context) ValidateJWT(secretKey string, token ...string) (JWTPayload, error) {
-	tk := c.GetJWT()
-	if len(token) > 0 {
-		tk = token[0]
-	}
-	jwt := newJWTUtil(secretKey)
-	return jwt.validateToken(tk)
-}
-
-// ParseJWTPayload 解析JWT载荷（不验证签名）
-func (c *Context) ParseJWTPayload(token string) (JWTPayload, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("无效的JWT格式")
-	}
-
-	payloadBase64 := parts[1]
-
-	// 解析载荷
-	payloadJSON, err := base64URLDecode(payloadBase64)
-	if err != nil {
-		return nil, fmt.Errorf("无效的载荷编码: %w", err)
-	}
-
-	var payload JWTPayload
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return nil, fmt.Errorf("解析载荷失败: %w", err)
-	}
-
-	return payload, nil
-}
-
-// RequireJWT 要求JWT令牌有效并返回载荷
-func (c *Context) RequireJWT(secretKey string) (JWTPayload, bool) {
-	// 使用 GetJWTWithOptions
-	payload, err := c.GetJWTWithOptions(JWTOptions{
-		Validate:     true,
-		RequireToken: true,
-		SecretKey:    secretKey,
-		AutoRespond:  true,
-	})
-
-	return payload, err == nil
-}
-
-// GetJWTPayload 获取当前请求JWT的载荷，不验证签名
-func (c *Context) GetJWTPayload() (JWTPayload, error) {
-	// 使用 GetJWTWithOptions
-	return c.GetJWTWithOptions(JWTOptions{
-		Validate:     false,
-		RequireToken: true,
-		AutoRespond:  false,
-	})
-}
-
-// GetJWTWithOptions 获取JWT令牌载荷，支持多种行为选项
-func (c *Context) GetJWTWithOptions(options JWTOptions) (JWTPayload, error) {
-	// 获取令牌
-	token := c.GetJWT()
-
-	// 检查令牌是否存在
-	if token == "" {
-		if options.RequireToken {
-			if options.AutoRespond {
-				c.Unauthorized("缺少认证令牌")
-			}
-			return nil, fmt.Errorf("缺少认证令牌")
-		}
-		return JWTPayload{}, nil
-	}
-
-	// 根据选项决定是否验证
-	if options.Validate {
-		if options.SecretKey == "" {
-			return nil, fmt.Errorf("验证JWT需要提供密钥")
-		}
-
-		// 验证令牌
-		payload, err := c.ValidateJWT(options.SecretKey, token)
-		if err != nil {
-			if options.AutoRespond {
-				c.Unauthorized(fmt.Sprintf("无效的认证令牌: %v", err))
-			}
-			return nil, err
-		}
-		return payload, nil
-	}
-
-	// 不验证，只解析
-	return c.ParseJWTPayload(token)
-}
-
-// ValidateJWTWithOptions 使用选项验证JWT令牌
-func (c *Context) ValidateJWTWithOptions(token string, options JWTOptions) (JWTPayload, error) {
-	// 确保选项中包含验证标志
-	options.Validate = true
-
-	// 使用提供的令牌而非自动获取
-	if token == "" {
-		if options.RequireToken {
-			if options.AutoRespond {
-				c.Unauthorized("缺少认证令牌")
-			}
-			return nil, fmt.Errorf("缺少认证令牌")
-		}
-		return JWTPayload{}, nil
-	}
-
-	// 验证令牌
-	if options.SecretKey == "" {
-		return nil, fmt.Errorf("验证JWT需要提供密钥")
-	}
-
-	// 验证令牌
-	payload, err := c.ValidateJWT(options.SecretKey, token)
-	if err != nil {
-		if options.AutoRespond {
-			c.Unauthorized(fmt.Sprintf("无效的认证令牌: %v", err))
-		}
-		return nil, err
-	}
-
-	return payload, nil
-}
-
-// CreateJWTSession 使用JWT创建用户会话
-func (c *Context) CreateJWTSession(secretKey string, expiration time.Duration, extraClaims ...H) (string, error) {
-	// 创建标准载荷
-	now := time.Now()
-	payload := JWTPayload{
-		JWTClaimIat: now.Unix(),
-		JWTClaimNbf: now.Unix(),
-		JWTClaimExp: now.Add(expiration).Unix(),
-		JWTClaimJti: generateJWTID(),
-	}
-
-	// 添加额外的声明
-	if len(extraClaims) > 0 {
-		for k, v := range extraClaims[0] {
-			payload[k] = v
-		}
-	}
-
-	// 生成令牌
-	token, err := c.GenerateJWT(secretKey, payload)
-	if err != nil {
-		return "", err
-	}
-
-	// 设置到Cookie
-	maxAge := int(expiration.Seconds())
-	c.SetJWT(token, maxAge)
-
-	return token, nil
-}
-
-// RefreshJWTSession 刷新JWT会话
-func (c *Context) RefreshJWTSession(secretKey string, expiration time.Duration) (string, error) {
-	token := c.GetJWT()
-	if token == "" {
-		return "", fmt.Errorf("没有找到JWT令牌")
-	}
-
-	// 解析当前载荷（不验证签名）
-	payload, err := c.ParseJWTPayload(token)
-	if err != nil {
-		return "", err
-	}
-
-	// 验证旧令牌
-	_, err = c.ValidateJWT(secretKey, token)
-	if err != nil {
-		return "", err
-	}
-
-	// 创建新载荷
-	now := time.Now()
-	newPayload := JWTPayload{}
-
-	// 复制原始载荷，但更新时间相关的声明
-	for k, v := range payload {
-		newPayload[k] = v
-	}
-
-	newPayload[JWTClaimIat] = now.Unix()
-	newPayload[JWTClaimExp] = now.Add(expiration).Unix()
-	newPayload[JWTClaimJti] = generateJWTID()
-
-	// 生成新令牌
-	newToken, err := c.GenerateJWT(secretKey, newPayload)
-	if err != nil {
-		return "", err
-	}
-
-	// 设置到Cookie
-	maxAge := int(expiration.Seconds())
-	c.SetJWT(newToken, maxAge)
-
-	return newToken, nil
-}
-
-// 增加国际化支持方法
-
-// Language 获取客户端语言
-func (c *Context) Language() string {
-	lang := c.GetHeader("Accept-Language")
-	if lang == "" {
-		return "zh-CN" // 默认中文
-	}
-
-	// 解析Accept-Language
-	langs := strings.Split(lang, ",")
-	if len(langs) > 0 {
-		parts := strings.Split(langs[0], ";")
-		return parts[0]
-	}
-
-	return "zh-CN"
-}
-
-// 增加安全相关方法
-
-// SetCSP 设置内容安全策略
-func (c *Context) SetCSP(policy string) {
-	c.Header("Content-Security-Policy", policy)
-}
-
-// SetXFrameOptions 设置X-Frame-Options
-func (c *Context) SetXFrameOptions(option string) {
-	c.Header("X-Frame-Options", option)
-}
-
-// SetXSSProtection 设置XSS保护
-func (c *Context) SetXSSProtection() {
-	c.Header("X-XSS-Protection", "1; mode=block")
 }
 
 // SetSecureHeaders 设置常用安全头
 func (c *Context) SetSecureHeaders() {
-	c.SetXSSProtection()
-	c.SetXFrameOptions("SAMEORIGIN")
+	c.Header("X-XSS-Protection", "1; mode=block")
+	c.Header("X-Frame-Options", "SAMEORIGIN")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 }
 
-// Download 下载文件
-func (c *Context) Download(filepath, filename string) {
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	c.File(filepath)
-}
+// 其他辅助方法
 
-// StreamFile 流式传输文件
-func (c *Context) StreamFile(filepath string) {
-	http.ServeFile(c.Writer, c.Request, filepath)
-}
-
-// 增加会话相关方法
-
-// SessionGet 获取会话数据
-func (c *Context) SessionGet(key string) (interface{}, bool) {
-	val, exists := c.Get(key)
-	return val, exists
-}
-
-// SessionSet 设置会话数据
-func (c *Context) SessionSet(key string, value interface{}) {
-	c.Set(key, value)
-}
-
-// SessionGetString 获取字符串类型的会话数据
-func (c *Context) SessionGetString(key string) string {
-	if val, exists := c.SessionGet(key); exists {
-		if str, ok := val.(string); ok {
-			return str
-		}
-	}
-	return ""
-}
-
-// SessionGetInt 获取整数类型的会话数据
-func (c *Context) SessionGetInt(key string) int {
-	if val, exists := c.SessionGet(key); exists {
-		if num, ok := val.(int); ok {
-			return num
-		}
-	}
-	return 0
-}
-
-// SessionGetBool 获取布尔类型的会话数据
-func (c *Context) SessionGetBool(key string) bool {
-	if val, exists := c.SessionGet(key); exists {
-		if b, ok := val.(bool); ok {
-			return b
-		}
-	}
-	return false
-}
-
-// 增加常见的错误和状态码响应方法
-
-// Unauthorized 未授权响应
-func (c *Context) Unauthorized(msg string) {
-	if msg == "" {
-		msg = "未授权访问"
-	}
-	c.JSON(http.StatusUnauthorized, response{
-		Code: http.StatusUnauthorized,
-		Msg:  msg,
-	})
-	c.Abort()
-}
-
-// MethodNotAllowed 方法不允许响应
-func (c *Context) MethodNotAllowed() {
-	c.JSON(http.StatusMethodNotAllowed, response{
-		Code: http.StatusMethodNotAllowed,
-		Msg:  "请求方法不允许",
-	})
-	c.Abort()
-}
-
-// ServiceUnavailable 服务不可用响应
-func (c *Context) ServiceUnavailable(msg string) {
-	if msg == "" {
-		msg = "服务暂时不可用"
-	}
-	c.JSON(http.StatusServiceUnavailable, response{
-		Code: http.StatusServiceUnavailable,
-		Msg:  msg,
-	})
-	c.Abort()
-}
-
-// 增加请求信息辅助方法
-
-// RequestInfo 获取请求信息
-func (c *Context) RequestInfo() H {
-	return H{
-		"method":     c.Method(),
-		"path":       c.BaseURL(),
-		"query":      c.Request.URL.RawQuery,
-		"ip":         c.GetIP(),
-		"user_agent": c.GetUserAgent(),
-		"referer":    c.GetHeader("Referer"),
-		"time":       time.Now().Format(time.RFC3339),
-	}
-}
-
-// Dump 获取请求详细信息（调试用）
-func (c *Context) Dump() H {
-	headers := make(map[string]string)
-	for k, v := range c.Request.Header {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
+// Language 获取客户端语言
+// 使用 golang.org/x/text/language 标准库解析 Accept-Language 头
+func (c *Context) Language() string {
+	accept := c.GetHeader("Accept-Language")
+	if accept == "" {
+		return "zh-CN"
 	}
 
-	return H{
-		"method":     c.Method(),
-		"path":       c.Request.URL.Path,
-		"query":      c.Request.URL.RawQuery,
-		"protocol":   c.Protocol(),
-		"host":       c.Host(),
-		"ip":         c.GetIP(),
-		"user_agent": c.GetUserAgent(),
-		"headers":    headers,
-		"time":       time.Now().Format(time.RFC3339),
+	tags, _, err := language.ParseAcceptLanguage(accept)
+	if err != nil || len(tags) == 0 {
+		return "zh-CN"
 	}
+
+	return tags[0].String()
 }
-
-// 增加数据验证辅助方法
-
-// Validator 验证器接口
-type Validator interface {
-	Validate() (bool, string)
-}
-
-// Validate 验证数据
-func (c *Context) Validate(v Validator) bool {
-	if valid, msg := v.Validate(); !valid {
-		c.Fail(msg)
-		return false
-	}
-	return true
-}
-
-// ValidateWithCode 带状态码的验证数据
-func (c *Context) ValidateWithCode(v Validator, code int) bool {
-	if valid, msg := v.Validate(); !valid {
-		c.JSON(http.StatusBadRequest, response{
-			Code: code,
-			Msg:  msg,
-		})
-		c.Abort()
-		return false
-	}
-	return true
-}
-
-// 增加实用的数据转换方法
 
 // GetIntSlice 获取整型切片
+// 使用 strings.FieldsFunc 自动过滤空值和处理分隔符
 func (c *Context) GetIntSlice(key string, sep ...string) []int {
 	separator := ","
-	if len(sep) > 0 {
+	if len(sep) > 0 && sep[0] != "" {
 		separator = sep[0]
 	}
 
@@ -1505,7 +1047,12 @@ func (c *Context) GetIntSlice(key string, sep ...string) []int {
 	result := make([]int, 0, len(parts))
 
 	for _, part := range parts {
-		if val, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+		// TrimSpace 自动去除首尾空格
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue // 跳过空值
+		}
+		if val, err := strconv.Atoi(part); err == nil {
 			result = append(result, val)
 		}
 	}
@@ -1513,285 +1060,447 @@ func (c *Context) GetIntSlice(key string, sep ...string) []int {
 	return result
 }
 
-// GetStringSlice 获取字符串切片
-func (c *Context) GetStringSlice(key string, sep ...string) []string {
-	separator := ","
-	if len(sep) > 0 {
-		separator = sep[0]
-	}
+// 设置组件方法 - 优化版本，支持延迟初始化
 
-	str := c.Query(key)
-	if str == "" {
-		str = c.PostForm(key)
-	}
-
-	if str == "" {
-		return []string{}
-	}
-
-	parts := strings.Split(str, separator)
-	result := make([]string, 0, len(parts))
-
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-
-	return result
+// SetCache 设置缓存实例
+func (c *Context) SetCache(cache *cache.Cache[string, any]) {
+	c.getComponents().cache = cache
 }
 
-// Paginate 分页参数处理
-func (c *Context) Paginate(defaultPageSize ...int) (page, pageSize int) {
-	// 默认值
-	page = 1
-	pageSize = 10
-
-	if len(defaultPageSize) > 0 && defaultPageSize[0] > 0 {
-		pageSize = defaultPageSize[0]
-	}
-
-	// 获取请求中的参数
-	if p := c.Query("page"); p != "" {
-		if val, err := strconv.Atoi(p); err == nil && val > 0 {
-			page = val
-		}
-	}
-
-	if ps := c.Query("page_size"); ps != "" {
-		if val, err := strconv.Atoi(ps); err == nil && val > 0 {
-			pageSize = val
-		}
-	}
-
-	// 限制最大页面大小
-	if pageSize > 100 {
-		pageSize = 100
-	}
-
-	return page, pageSize
+// SetErrorHandler 设置错误处理器
+func (c *Context) SetErrorHandler(handler types.ErrorHandler) {
+	c.getComponents().errorHandler = handler
 }
 
-// ClearJWT 清除JWT令牌
+// SetJWTAdapter 设置JWT适配器
+func (c *Context) SetJWTAdapter(adapter *JWTAdapter) {
+	c.getComponents().jwtAdapter = adapter
+}
+
+// GetJWTPayload 获取JWT载荷
+func (c *Context) GetJWTPayload() JWTPayload {
+	if payload, exists := c.Get("jwt_payload"); exists {
+		if jwtPayload, ok := payload.(JWTPayload); ok {
+			return jwtPayload
+		}
+	}
+	return nil
+}
+
+// SetJWTPayload 设置JWT载荷到上下文
+func (c *Context) SetJWTPayload(payload JWTPayload) {
+	c.Set("jwt_payload", payload)
+}
+
+// SetSSEHub 设置SSE中心
+func (c *Context) SetSSEHub(hub *sse.Hub) {
+	c.getComponents().sseHub = hub
+}
+
+// setGlobalCache 设置全局缓存（内部方法）
+func (c *Context) setGlobalCache(cache *cache.Cache[string, any]) {
+	c.getComponents().cache = cache
+}
+
+// GetGlobalCache 获取全局缓存
+func (c *Context) GetGlobalCache() *cache.Cache[string, any] {
+	return c.getCache()
+}
+
+// CreateJWTSession 创建JWT会话
+func (c *Context) CreateJWTSession(secretKey string, duration time.Duration, payload types.H) (string, error) {
+	adapter := c.getJWTAdapter()
+	if adapter == nil {
+		return "", fmt.Errorf("JWT适配器未初始化")
+	}
+
+	// 转换payload为JWTPayload类型
+	jwtPayload := make(JWTPayload)
+	for k, v := range payload {
+		jwtPayload[k] = v
+	}
+
+	// 设置过期时间
+	jwtPayload["exp"] = time.Now().Add(duration).Unix()
+
+	// JWT适配器自己管理密钥，不需要使用secretKey参数
+	token, err := adapter.GenerateToken(jwtPayload)
+	if err != nil {
+		return "", err
+	}
+
+	// 设置JWT到cookie
+	c.SetJWT(token, int(duration.Seconds()))
+	return token, nil
+}
+
+// RefreshJWTSession 刷新JWT会话
+func (c *Context) RefreshJWTSession(secretKey string, duration time.Duration) (string, error) {
+	adapter := c.getJWTAdapter()
+	if adapter == nil {
+		return "", fmt.Errorf("JWT适配器未初始化")
+	}
+
+	// 获取当前JWT
+	currentToken := c.GetJWT()
+	if currentToken == "" {
+		return "", fmt.Errorf("未找到JWT令牌")
+	}
+
+	// 验证当前令牌
+	payload, err := adapter.ValidateToken(currentToken)
+	if err != nil {
+		return "", fmt.Errorf("当前JWT令牌无效: %v", err)
+	}
+
+	// 更新过期时间
+	payload["exp"] = time.Now().Add(duration).Unix()
+
+	// JWT适配器自己管理密钥，不需要使用secretKey参数
+	// 生成新令牌
+	newToken, err := adapter.GenerateToken(payload)
+	if err != nil {
+		return "", err
+	}
+
+	// 设置新的JWT到cookie
+	c.SetJWT(newToken, int(duration.Seconds()))
+	return newToken, nil
+}
+
+// ClearJWT 清除JWT
 func (c *Context) ClearJWT() {
-	c.SetCookie(JWTCookieKey, "", -1, "/", c.RootDomain(), c.IsSsl(), true)
+	c.SetCookie("token", "", -1, "/", "", false, true)
+}
+
+// SessionGetString 从会话中获取字符串值
+func (c *Context) SessionGetString(key string) string {
+	// 这里简化实现，从JWT payload中获取值
+	adapter := c.getJWTAdapter()
+	if adapter == nil {
+		return ""
+	}
+
+	token := c.GetJWT()
+	if token == "" {
+		return ""
+	}
+
+	payload, err := adapter.ValidateToken(token)
+	if err != nil {
+		return ""
+	}
+
+	if val, exists := payload[key]; exists {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+// SuccessWithMsg 成功响应带自定义消息
+func (c *Context) SuccessWithMsg(msg string, data interface{}, url ...string) {
+	var respUrl string
+	if len(url) > 0 {
+		respUrl = url[0]
+	}
+	c.JSON(http.StatusOK, types.Response{
+		Code: types.SuccessCode,
+		Msg:  msg,
+		Data: data,
+		URL:  respUrl,
+	})
+	c.Abort()
+}
+
+// Created 创建成功响应 (201)
+func (c *Context) Created(data interface{}, url ...string) {
+	var respUrl string
+	if len(url) > 0 {
+		respUrl = url[0]
+	}
+	c.JSON(http.StatusCreated, types.Response{
+		Code: http.StatusCreated,
+		Msg:  "created",
+		Data: data,
+		URL:  respUrl,
+	})
+	c.Abort()
+}
+
+// Accepted 接受处理响应 (202)
+func (c *Context) Accepted(msg string, url ...string) {
+	var respUrl string
+	if len(url) > 0 {
+		respUrl = url[0]
+	}
+	c.JSON(http.StatusAccepted, types.Response{
+		Code: http.StatusAccepted,
+		Msg:  msg,
+		Data: nil,
+		URL:  respUrl,
+	})
+	c.Abort()
+}
+
+// NoContent 无内容响应 (204)
+func (c *Context) NoContent() {
+	c.Status(http.StatusNoContent)
+	c.Abort()
+}
+
+// ValidationError 验证错误响应 (422)
+func (c *Context) ValidationError(errors interface{}, url ...string) {
+	var respUrl string
+	if len(url) > 0 {
+		respUrl = url[0]
+	}
+	c.JSON(http.StatusUnprocessableEntity, types.Response{
+		Code: http.StatusUnprocessableEntity,
+		Msg:  "validation failed",
+		Data: errors,
+		URL:  respUrl,
+	})
+	c.Abort()
+}
+
+// Paginated 分页响应
+func (c *Context) Paginated(data interface{}, page, pageSize, total int64, url ...string) {
+	var respUrl string
+	if len(url) > 0 {
+		respUrl = url[0]
+	}
+
+	response := H{
+		"list": data,
+		"pagination": H{
+			"page":      page,
+			"page_size": pageSize,
+			"total":     total,
+			"has_more":  (page * pageSize) < total,
+		},
+	}
+
+	c.JSON(http.StatusOK, types.Response{
+		Code: types.SuccessCode,
+		Msg:  "success",
+		Data: response,
+		URL:  respUrl,
+	})
+	c.Abort()
+}
+
+// ServerError 服务器错误响应 (500)
+func (c *Context) ServerError(msg ...string) {
+	message := "internal server error"
+	if len(msg) > 0 {
+		message = msg[0]
+	}
+	c.JSON(http.StatusInternalServerError, types.Response{
+		Code: http.StatusInternalServerError,
+		Msg:  message,
+		Data: nil,
+	})
+	c.Abort()
 }
 
 // GetCache 获取缓存实例
 func (c *Context) GetCache() *cache.Cache[string, any] {
-	return c.cache
+	return c.getCache()
 }
 
-// CacheSet 设置缓存值
-func (c *Context) CacheSet(key string, value any, duration ...time.Duration) {
-	if c.cache != nil {
-		c.cache.Set(key, value, duration...)
+// Port 获取请求端口
+func (c *Context) Port() string {
+	parts := strings.Split(c.Request.Host, ":")
+	if len(parts) > 1 {
+		return parts[1]
 	}
-}
-
-// CacheGet 从缓存获取值
-func (c *Context) CacheGet(key string) (any, bool) {
-	if c.cache != nil {
-		return c.cache.Get(key)
+	// 根据协议返回默认端口
+	if c.IsSSL() {
+		return "443"
 	}
-	return nil, false
+	return "80"
 }
 
-// CacheDelete 从缓存删除值
-func (c *Context) CacheDelete(key string) {
-	if c.cache != nil {
-		c.cache.Delete(key)
-	}
+// SetCSP 设置内容安全策略
+func (c *Context) SetCSP(policy string) {
+	c.Header("Content-Security-Policy", policy)
 }
 
-// CacheHas 检查缓存中是否存在键
-func (c *Context) CacheHas(key string) bool {
-	if c.cache != nil {
-		return c.cache.Has(key)
-	}
-	return false
+// SetXFrameOptions 设置X-Frame-Options头
+func (c *Context) SetXFrameOptions(option string) {
+	c.Header("X-Frame-Options", option)
 }
 
-// CacheKeys 获取缓存中所有键
-func (c *Context) CacheKeys() []string {
-	if c.cache != nil {
-		return c.cache.Keys()
-	}
-	return []string{}
-}
+// 性能优化相关方法
 
-// CacheClear 清空缓存
-func (c *Context) CacheClear() {
-	if c.cache != nil {
-		c.cache.Clear()
+// Reset 重置Context状态（用于对象池）
+func (c *Context) Reset() {
+	if c.components != nil {
+		// 清理组件状态但不释放到池中（由releaseContext处理）
+		c.components.cache = nil
+		c.components.errorHandler = nil
+		c.components.jwtAdapter = nil
+		c.components.sseHub = nil
 	}
 }
 
-// CacheGetString 从缓存获取字符串值
-func (c *Context) CacheGetString(key string) (string, bool) {
-	if c.cache == nil {
-		return "", false
-	}
-
-	val, ok := c.cache.Get(key)
-	if !ok {
-		return "", false
-	}
-
-	// 尝试类型转换
-	if s, ok := val.(string); ok {
-		return s, true
-	}
-
-	return "", false
+// IsPooled 检查Context是否来自对象池
+func (c *Context) IsPooled() bool {
+	return c.pooled
 }
 
-// CacheGetInt 从缓存获取整数值
-func (c *Context) CacheGetInt(key string) (int, bool) {
-	if c.cache == nil {
-		return 0, false
+// Clone 克隆Context（深拷贝组件）
+func (c *Context) Clone() *Context {
+	clone := &Context{
+		Context: c.Context,
+		pooled:  false, // 克隆的实例不放回池中
 	}
 
-	val, ok := c.cache.Get(key)
-	if !ok {
-		return 0, false
+	// 如果原Context有组件，则复制组件
+	if c.components != nil {
+		clone.components = &contextComponents{
+			cache:        c.components.cache,        // 缓存实例可以共享
+			errorHandler: c.components.errorHandler, // 错误处理器可以共享
+			jwtAdapter:   c.components.jwtAdapter,   // JWT适配器可以共享
+			sseHub:       c.components.sseHub,       // SSE中心可以共享
+		}
 	}
 
-	// 尝试类型转换
-	if i, ok := val.(int); ok {
-		return i, true
-	}
-
-	return 0, false
+	return clone
 }
 
-// CacheGetBool 从缓存获取布尔值
-func (c *Context) CacheGetBool(key string) (bool, bool) {
-	if c.cache == nil {
-		return false, false
+// WithComponents 设置多个组件（链式调用）
+func (c *Context) WithComponents(cache *cache.Cache[string, any],
+	errorHandler types.ErrorHandler, jwtAdapter *JWTAdapter, sseHub *sse.Hub,
+) *Context {
+	if cache != nil {
+		c.SetCache(cache)
 	}
-
-	val, ok := c.cache.Get(key)
-	if !ok {
-		return false, false
+	if errorHandler != nil {
+		c.SetErrorHandler(errorHandler)
 	}
-
-	// 尝试类型转换
-	if b, ok := val.(bool); ok {
-		return b, true
+	if jwtAdapter != nil {
+		c.SetJWTAdapter(jwtAdapter)
 	}
-
-	return false, false
+	if sseHub != nil {
+		c.SetSSEHub(sseHub)
+	}
+	return c
 }
 
-// CacheGetFloat64 从缓存获取浮点值
-func (c *Context) CacheGetFloat64(key string) (float64, bool) {
-	if c.cache == nil {
-		return 0, false
-	}
-
-	val, ok := c.cache.Get(key)
-	if !ok {
-		return 0, false
-	}
-
-	// 尝试类型转换
-	if f, ok := val.(float64); ok {
-		return f, true
-	}
-
-	return 0, false
+// HasComponents 检查是否已初始化组件
+func (c *Context) HasComponents() bool {
+	return c.components != nil
 }
 
-// CacheSetList 设置列表缓存
-func (c *Context) CacheSetList(key string, duration ...time.Duration) {
-	if c.cache != nil {
-		c.cache.SetList(key, duration...)
+// ComponentsCount 获取已设置的组件数量（用于调试）
+func (c *Context) ComponentsCount() int {
+	if c.components == nil {
+		return 0
 	}
-}
 
-// CacheLPush 向列表缓存头部添加元素
-func (c *Context) CacheLPush(key string, values ...any) int {
-	if c.cache != nil {
-		return c.cache.LPush(key, values...)
+	count := 0
+	if c.components.cache != nil {
+		count++
 	}
-	return 0
-}
-
-// CacheRPush 向列表缓存尾部添加元素
-func (c *Context) CacheRPush(key string, values ...any) int {
-	if c.cache != nil {
-		return c.cache.RPush(key, values...)
+	if c.components.errorHandler != nil {
+		count++
 	}
-	return 0
-}
-
-// CacheLPop 从列表缓存头部弹出元素
-func (c *Context) CacheLPop(key string) (any, bool) {
-	if c.cache != nil {
-		return c.cache.LPop(key)
+	if c.components.jwtAdapter != nil {
+		count++
 	}
-	return nil, false
-}
-
-// CacheRPop 从列表缓存尾部弹出元素
-func (c *Context) CacheRPop(key string) (any, bool) {
-	if c.cache != nil {
-		return c.cache.RPop(key)
+	if c.components.sseHub != nil {
+		count++
 	}
-	return nil, false
+	return count
 }
 
-// CacheLIndex 获取列表缓存指定索引的元素
-func (c *Context) CacheLIndex(key string, index int) (any, bool) {
-	if c.cache != nil {
-		return c.cache.LIndex(key, index)
-	}
-	return nil, false
-}
-
-// CacheLRange 获取列表缓存的范围元素
-func (c *Context) CacheLRange(key string, start, stop int) []any {
-	if c.cache != nil {
-		return c.cache.LRange(key, start, stop)
-	}
-	return []any{}
-}
-
-// CacheDeleteList 删除列表缓存
-func (c *Context) CacheDeleteList(key string) {
-	if c.cache != nil {
-		c.cache.DeleteList(key)
-	}
-}
-
-// CacheHasList 检查列表缓存是否存在
-func (c *Context) CacheHasList(key string) bool {
-	if c.cache != nil {
-		return c.cache.HasList(key)
-	}
-	return false
-}
-
-// setGlobalCache 初始化全局缓存
-func (c *Context) setGlobalCache(cache *cache.Cache[string, any]) {
-	c.cache = cache
-}
-
-// newContext 创建一个新的Context实例
-// 如果baseCtx已经是*Context类型，会继承它的缓存和SSE中心
+// newContext 创建一个新的Context实例 - 优化版本，支持对象池化
 func newContext(c *gin.Context) *Context {
 	// 检查是否已经包装过
-	if existingCtx, ok := c.Value("_context_instance").(*Context); ok {
-		return existingCtx
+	if existingCtx, ok := c.Get("_context_instance"); ok {
+		if ctx, ok := existingCtx.(*Context); ok {
+			return ctx
+		}
 	}
 
-	// 创建新的上下文
-	ctx := &Context{Context: c}
+	// 从对象池获取Context实例
+	ctx := contextPool.Get().(*Context)
+
+	// 重置Context状态
+	ctx.Context = c
+	ctx.components = nil // 延迟初始化
+	ctx.pooled = true
 
 	// 存储在gin上下文中以便复用
 	c.Set("_context_instance", ctx)
 
 	return ctx
+}
+
+// releaseContext 释放Context实例回对象池 - 性能优化
+func releaseContext(ctx *Context) {
+	if !ctx.pooled {
+		return
+	}
+
+	// 重置Context状态
+	ctx.Context = nil
+
+	// 释放组件到对象池
+	if ctx.components != nil {
+		// 清理组件状态
+		ctx.components.cache = nil
+		ctx.components.errorHandler = nil
+		ctx.components.jwtAdapter = nil
+		ctx.components.sseHub = nil
+
+		// 放回组件池
+		componentsPool.Put(ctx.components)
+		ctx.components = nil
+	}
+
+	// 放回Context池
+	contextPool.Put(ctx)
+}
+
+// NewContext 创建新的Context实例（公共方法）
+func NewContext(c *gin.Context) *Context {
+	return newContext(c)
+}
+
+// NewContextWithComponents 创建带组件的Context实例
+func NewContextWithComponents(c *gin.Context, cache *cache.Cache[string, any],
+	errorHandler types.ErrorHandler, jwtAdapter *JWTAdapter, sseHub *sse.Hub,
+) *Context {
+	ctx := newContext(c)
+
+	// 设置组件
+	if cache != nil {
+		ctx.SetCache(cache)
+	}
+	if errorHandler != nil {
+		ctx.SetErrorHandler(errorHandler)
+	}
+	if jwtAdapter != nil {
+		ctx.SetJWTAdapter(jwtAdapter)
+	}
+	if sseHub != nil {
+		ctx.SetSSEHub(sseHub)
+	}
+
+	return ctx
+}
+
+// Next 覆盖gin.Context的Next方法，支持中间件管理器的控制
+func (c *Context) Next() {
+	c.nextCalled = true
+	if c.nextFunc != nil {
+		c.nextFunc()
+	} else {
+		// 如果没有自定义next函数，调用gin的原始Next方法
+		c.Context.Next()
+	}
 }
