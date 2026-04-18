@@ -1,0 +1,45 @@
+package main
+
+import (
+	"embed"
+
+	"github.com/darkit/gin"
+	"github.com/darkit/gin/pkg/static"
+)
+
+//go:embed dist/* ui/admin.zip
+var assets embed.FS
+
+func main() {
+	e := gin.New(
+		gin.WithAddr(":8080"),
+	)
+	r := e.Router()
+
+	// 普通资源目录：不会自动回退到首页。
+	r.Assets("/assets", "./public")
+
+	// 子站点：适合 /app 这类前端控制台。
+	r.Site(
+		"/app",
+		"./dist",
+		static.WithHistoryFallback(),
+		static.WithNotFoundFile("404.html"),
+	)
+
+	// ZIP 站点：适合单文件分发。
+	if err := r.SiteZip("/admin", "./admin.zip"); err != nil {
+		panic(err)
+	}
+
+	// 全局兜底：适合除业务路由外全部交给前端。
+	if err := e.FallbackSiteEmbeddedZip(assets, "ui/admin.zip"); err != nil {
+		panic(err)
+	}
+
+	r.GET("/api/ping", func(c *gin.Context) {
+		c.Success(gin.H{"message": "pong"})
+	})
+
+	_ = e.Run()
+}

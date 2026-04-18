@@ -1,0 +1,85 @@
+package main
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/darkit/gin"
+)
+
+func main() {
+	e := gin.Default(
+		gin.WithAddr(":8080"),
+	)
+	r := e.Router()
+
+	r.GET("/events", func(c *gin.Context) {
+		steps := []string{
+			"已接收任务",
+			"正在分析输入",
+			"正在生成结果",
+			"任务完成",
+		}
+
+		c.BeginSSE()
+		for idx, step := range steps {
+			select {
+			case <-c.Done():
+				return
+			default:
+			}
+
+			if err := c.SSE("progress", gin.H{
+				"step":    idx + 1,
+				"total":   len(steps),
+				"message": step,
+			}); err != nil {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+
+		_ = c.SSE("done", gin.H{"status": "completed"})
+	})
+
+	r.GET("/logs", func(c *gin.Context) {
+		c.BeginNDJSON()
+		for _, line := range []map[string]any{
+			{"level": "info", "message": "任务进入队列"},
+			{"level": "info", "message": "开始执行"},
+			{"level": "info", "message": "处理完成"},
+		} {
+			if err := c.StreamNDJSON(line); err != nil {
+				return
+			}
+		}
+	})
+
+	r.POST("/webhooks/demo", func(c *gin.Context) {
+		body, err := c.RawBody()
+		if err != nil {
+			c.InternalError("读取原始请求体失败")
+			return
+		}
+
+		if c.WebhookSignature() == "" {
+			c.Problem(
+				http.StatusUnauthorized,
+				"https://example.com/problems/missing-signature",
+				"缺少签名",
+				"请求头中未携带 webhook 签名",
+			)
+			return
+		}
+
+		c.Success(gin.H{
+			"event_id":  c.WebhookEventID(),
+			"signature": c.WebhookSignature(),
+			"timestamp": c.WebhookTimestamp(),
+			"raw_body":  string(body),
+		})
+	})
+
+	_ = e.Run()
+}
+

@@ -1,0 +1,42 @@
+package main
+
+import (
+	"time"
+
+	"github.com/darkit/gin"
+	"github.com/darkit/gin/middleware"
+)
+
+func main() {
+	e := gin.Default(
+		gin.WithAddr(":8080"),
+		gin.WithReadTimeout(30*time.Second),
+		gin.WithWriteTimeout(30*time.Second),
+	)
+
+	e.UseAny(
+		middleware.CORS(),
+		middleware.RealIP(),
+	)
+
+	r := e.Router()
+	r.Liveness()
+
+	r.GET("/ping", func(c *gin.Context) {
+		c.Success(gin.H{
+			"message":    "pong",
+			"request_id": c.RequestID(),
+		})
+	})
+
+	r.GET("/users/:id", func(c *gin.Context) {
+		id, err := c.ParamIntE("id")
+		if err != nil {
+			c.BadRequest("invalid user id")
+			return
+		}
+		c.Success(gin.H{"id": id})
+	})
+
+	_ = e.Run()
+}

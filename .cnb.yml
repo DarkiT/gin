@@ -1,0 +1,61 @@
+include:
+  - .cnb/codewiki.yml
+  - .cnb/web_trigger.yml
+$:
+  vscode:
+    - runner:
+        cpus: 8
+        tags: cnb:arch:amd64
+      docker:
+        image: docker.cnb.cool/zishuo/default-dev-env:latest
+      imports: https://cnb.cool/zishuo/system-env/-/blob/main/envs/init.yml
+      services:
+        - name: vscode
+          options:
+            keepAliveTimeout: 86400000
+        - name: docker
+          options:
+            rootlessBuildkitd:
+              enabled: true
+      stages:
+        - name: Wait for Vscode
+          type: vscode:go
+        - name: Claude Code Update
+          script: |
+            claude update
+        - name: OpenAI Codex Update
+          script: |
+            bun install -g @openai/codex@latest
+        - name: Install MCP Tools
+          script: |
+            bun install -g tdd-guard@latest
+            bun install -g mcp-remote@latest
+            bun install -g repomix@latest
+            bun install -g ace-tool@latest
+            bun install -g open-websearch@latest
+            bun install -g @fission-ai/openspec@latest
+            bun install -g @modelcontextprotocol/server-sequential-thinking@latest
+            bun install -g @modelcontextprotocol/server-memory@latest
+            bun install -g @pimzino/spec-workflow-mcp@latest
+            bun install -g @upstash/context7-mcp@latest
+            # uv tool install --from git+https://github.com/wxhzhwxhzh/DrissionPageMCP drssionpagemcp
+            setsid spec-workflow-mcp /workspace --no-open --dashboard --port=8888 2>&1 > /dev/null &
+        - name: Install Tools or Plugins
+          script: |
+            if [ -e "${CNB_BUILD_WORKSPACE}/.scripts/install.sh" ]; then
+              bash ${CNB_BUILD_WORKSPACE}/.scripts/install.sh
+            fi
+      endStages:
+        - name: Coverage
+          allowExts: .go
+          lang: go
+          type: testing:coverage
+          options:
+            breakIfNoCoverage: false
+        - name: Send Notifications
+          script: |
+            if [ -e "${CNB_BUILD_WORKSPACE}/.scripts/notifications.sh" ]; then
+              bash ${CNB_BUILD_WORKSPACE}/.scripts/notifications.sh
+            fi
+        - name: Save AI Config
+          script: /usr/local/bin/cache-control save

@@ -12,7 +12,7 @@ LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X m
 BUILD_FLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
 # 源文件路径 - 根据项目架构调整
-MAIN_PATH := ./examples/full
+MAIN_PATH := .
 # 输出目录
 BIN_DIR := ./bin
 

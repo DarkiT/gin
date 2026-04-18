@@ -1,0 +1,34 @@
+package main
+
+import (
+	"time"
+
+	"github.com/darkit/gin"
+)
+
+func main() {
+	e := gin.New(
+		gin.WithAddr(":8080"),
+		gin.WithReadTimeout(30*time.Second),
+		gin.WithWriteTimeout(30*time.Second),
+		gin.WithUploadDir("./uploads"),
+		gin.WithMaxFileSize(10<<20),
+	)
+
+	r := e.Router()
+	r.POST("/upload", func(c *gin.Context) {
+		file, err := c.SaveFile("file")
+		if err != nil {
+			c.BadRequest(err.Error())
+			return
+		}
+		c.Created(file)
+	})
+
+	r.GET("/download/:name", func(c *gin.Context) {
+		name := c.Param("name")
+		c.StreamFile("./uploads/"+name, name)
+	})
+
+	_ = e.Run()
+}

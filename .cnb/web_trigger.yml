@@ -1,0 +1,6 @@
+branch:
+  - reg: ".*"
+    buttons:
+      - name: 更新项目文档
+        description: 使用AI大模型自动更新项目文档
+        event: web_trigger_start_codewiki

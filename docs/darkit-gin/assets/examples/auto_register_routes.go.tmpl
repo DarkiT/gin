@@ -1,0 +1,34 @@
+package main
+
+import "github.com/darkit/gin"
+
+type UserController struct{}
+
+func (u *UserController) RoutePrefix() string {
+	return "/users"
+}
+
+func (u *UserController) GetList(c *gin.Context) {
+	c.Success(gin.H{"users": []string{"alice", "bob"}})
+}
+
+func (u *UserController) GetByIDRegex(c *gin.Context) {
+	c.Success(gin.H{"id": c.Param("id")})
+}
+
+func (u *UserController) PostCreate(c *gin.Context) {
+	c.Created(gin.H{"status": "created"})
+}
+
+func main() {
+	e := gin.Default()
+	r := e.Router()
+	r.AutoRegister(&UserController{})
+
+	// 生成路由：
+	// GET  /users/list
+	// GET  /users/by/{id:[0-9]+}
+	// POST /users/create
+
+	_ = e.Run(":8080")
+}

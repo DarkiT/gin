@@ -1,0 +1,30 @@
+package main
+
+import "github.com/darkit/gin"
+
+type User struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+func main() {
+	e := gin.Default()
+	r := e.Router()
+
+	r.GET("/export/users", func(c *gin.Context) {
+		rows := []User{{ID: 1, Name: "alice", Email: "alice@example.com"}}
+		if err := c.ExportExcel(rows, "users.xlsx"); err != nil {
+			c.InternalError(err.Error())
+		}
+	})
+
+	r.GET("/export/users.csv", func(c *gin.Context) {
+		rows := []User{{ID: 1, Name: "alice", Email: "alice@example.com"}}
+		if err := c.ExportCSV(rows, "users.csv"); err != nil {
+			c.InternalError(err.Error())
+		}
+	})
+
+	_ = e.Run(":8080")
+}

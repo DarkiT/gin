@@ -1,0 +1,29 @@
+"**":
+  tag_push:
+    - runner:
+        cpus: 1
+      services:
+        - docker
+      docker:
+        volumes:
+          - ${CNB_BUILD_WORKSPACE}/docs/wiki:data
+      stages:
+        - name: Make Code Wiki
+          timeout: 2h
+          image: cnbcool/codewiki:latest
+          settings:
+            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}
+  web_trigger_start_codewiki:
+    - runner:
+        cpus: 1
+      services:
+        - docker
+      docker:
+        volumes:
+          - ${CNB_BUILD_WORKSPACE}/docs/wiki:data
+      stages:
+        - name: Make Code Wiki
+          timeout: 2h
+          image: cnbcool/codewiki:latest
+          settings:
+            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}

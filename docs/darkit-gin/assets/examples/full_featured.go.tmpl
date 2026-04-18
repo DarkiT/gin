@@ -1,0 +1,61 @@
+package main
+
+import (
+	"time"
+
+	"github.com/darkit/gin"
+	"github.com/darkit/gin/auth"
+	"github.com/darkit/gin/middleware"
+)
+
+func main() {
+	e := gin.Default(
+		gin.WithAddr(":8080"),
+		gin.WithReadTimeout(30*time.Second),
+		gin.WithWriteTimeout(30*time.Second),
+		gin.WithAuth(auth.AuthConfig{
+			Secret:     "replace-me",
+			Expiry:     24 * time.Hour,
+			TokenStyle: auth.TokenStyleJWT,
+		}),
+	)
+
+	r := e.Router()
+	e.UseAny(
+		middleware.CORS(),
+		middleware.RealIP(),
+		middleware.OTel("darkit-gin-demo"),
+	)
+	r.HealthCheck()
+	r.Liveness()
+
+	r.GET("/healthz", func(c *gin.Context) { c.Success(gin.H{"ok": true}) })
+	r.POST("/login", func(c *gin.Context) {
+		token, err := c.Auth().Login("admin", "web")
+		if err != nil {
+			c.InternalError(err.Error())
+			return
+		}
+		c.Success(gin.H{"token": token})
+	})
+
+	api := r.Group("/api")
+	api.GET("/users", func(c *gin.Context) {
+		page, perPage := c.ParsePagination(1, 10)
+		c.Paginated([]string{"alice", "bob"}, page, perPage, 2)
+	})
+
+	api.GET("/messages", func(c *gin.Context) {
+		params := c.ParseCursorPagination(
+			gin.WithDefaultCursorLimit(20),
+			gin.WithMaxCursorLimit(100),
+		)
+		c.CursorPaginated([]string{"m1", "m2"}, &gin.CursorPageInfo{
+			NextCursor: "next-cursor",
+			Limit:      params.Limit,
+			HasMore:    true,
+		})
+	})
+
+	_ = e.Run()
+}

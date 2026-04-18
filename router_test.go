@@ -1,253 +1,644 @@
-package gin
+package gin_test
 
 import (
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
+	engine "github.com/darkit/gin"
+	"github.com/gin-gonic/gin"
 )
 
-// 测试路由器初始化
-func TestNewRouter(t *testing.T) {
-	router := NewRouter(nil)
-	assert.NotNil(t, router)
-	assert.NotNil(t, router.engine)
-	assert.NotNil(t, router.groups)
-	assert.NotNil(t, router.routes)
-}
-
-// 测试路由注册
-func TestRouterRegister(t *testing.T) {
-	router := NewRouter(nil)
-
-	// 注册路由
-	router.GET("/test", func(c *Context) {
-		c.String(http.StatusOK, "test")
+func TestRouterMethods(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
+	called := false
+	r.GET("/ping", func(c *engine.Context) {
+		called = true
+		c.String(http.StatusOK, "pong")
 	})
-
-	// 验证路由已注册
-	routes := router.GetRoutes()
-	assert.Equal(t, 1, len(routes))
-	assert.Contains(t, routes, "GET:/test")
-}
-
-// 测试路由冲突检测
-func TestRouterConflict(t *testing.T) {
-	router := NewRouter(nil)
-
-	// 注册首个路由
-	router.GET("/test", func(c *Context) {
-		c.String(http.StatusOK, "test1")
-	})
-
-	// 尝试注册冲突路由，应该被忽略
-	router.GET("/test", func(c *Context) {
-		c.String(http.StatusOK, "test2")
-	})
-
-	// 验证路由数量仍为1
-	routes := router.GetRoutes()
-	assert.Equal(t, 1, len(routes))
-
-	// 测试请求以验证第一个处理程序仍然生效
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/test", nil)
-	router.engine.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "test1", w.Body.String()) // 应该是第一个处理程序的输出
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !called {
+		t.Fatalf("router GET failed")
+	}
 }
 
-// 测试路由组
-func TestRouterGroup(t *testing.T) {
-	router := NewRouter(nil)
+func TestRouterMethods_VariadicHandlers(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
 
-	// 创建路由组
-	api := router.Group("/api")
+	called := make([]string, 0, 5)
+	r.GET("/chain",
+		func(c *engine.Context) {
+			called = append(called, "mw1-before")
+			c.Header("X-MW-1", "1")
+			c.Next()
+			called = append(called, "mw1-after")
+		},
+		func(c *engine.Context) {
+			called = append(called, "mw2-before")
+			c.Header("X-MW-2", "2")
+			c.Next()
+			called = append(called, "mw2-after")
+		},
+		func(c *engine.Context) {
+			called = append(called, "handler")
+			c.String(http.StatusOK, "ok")
+		},
+	)
 
-	// 在组中注册路由
-	api.GET("/test", func(c *Context) {
-		c.String(http.StatusOK, "api-test")
-	})
-
-	// 验证路由已注册
-	routes := router.GetRoutes()
-	assert.Equal(t, 1, len(routes))
-	assert.Contains(t, routes, "GET:/api/test")
-
-	// 测试请求
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/test", nil)
-	router.engine.ServeHTTP(w, req)
+	req := httptest.NewRequest(http.MethodGet, "/chain", nil)
+	e.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "api-test", w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if body := w.Body.String(); body != "ok" {
+		t.Fatalf("body=%q, want=ok", body)
+	}
+	if w.Header().Get("X-MW-1") != "1" || w.Header().Get("X-MW-2") != "2" {
+		t.Fatalf("variadic middlewares not executed")
+	}
+	want := []string{"mw1-before", "mw2-before", "handler", "mw2-after", "mw1-after"}
+	if len(called) != len(want) {
+		t.Fatalf("call order=%v, want=%v", called, want)
+	}
+	for i := range want {
+		if called[i] != want[i] {
+			t.Fatalf("call order=%v, want=%v", called, want)
+		}
+	}
 }
 
-// 测试嵌套路由组和路径处理
-func TestNestedRouterGroup(t *testing.T) {
-	router := NewRouter(nil)
+func TestRouterMethods_AutoRegexRoute(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
 
-	// 创建嵌套路由组
-	api := router.Group("/api/")
-	v1 := api.Group("/v1/")
-	users := v1.Group("users")
-
-	// 在最深层组中注册路由
-	users.GET("/list", func(c *Context) {
-		c.String(http.StatusOK, "users-list")
-	})
-
-	// 验证路由已正确注册（路径正确规范化）
-	routes := router.GetRoutes()
-	assert.Equal(t, 1, len(routes))
-	assert.Contains(t, routes, "GET:/api/v1/users/list")
-
-	// 测试请求
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/users/list", nil)
-	router.engine.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "users-list", w.Body.String())
-}
-
-// 测试并发注册路由
-func TestConcurrentRouteRegistration(t *testing.T) {
-	router := NewRouter(nil)
-	var wg sync.WaitGroup
-
-	// 并发注册100个路由
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			path := "/test/" + string(rune('a'+i%26))
-			router.GET(path, func(c *Context) {
-				c.String(http.StatusOK, path)
+	r.GET("/users/{id:[0-9]+}",
+		func(c *engine.Context) {
+			c.Header("X-Regex-Before", "1")
+			c.Header("X-Regex-MW", "1")
+			c.Next()
+			c.Header("X-Regex-After", "1")
+		},
+		func(c *engine.Context) {
+			c.JSON(http.StatusOK, engine.H{
+				"id": c.Param("id"),
 			})
-		}(i)
+		},
+	)
+
+	ok := httptest.NewRecorder()
+	e.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/users/123", nil))
+	if ok.Code != http.StatusOK {
+		t.Fatalf("regex GET status=%d", ok.Code)
+	}
+	if body := ok.Body.String(); body != `{"id":"123"}` {
+		t.Fatalf("regex GET body=%q", body)
+	}
+	if ok.Header().Get("X-Regex-MW") != "1" {
+		t.Fatalf("regex middleware not executed")
+	}
+	if ok.Header().Get("X-Regex-Before") != "1" || ok.Header().Get("X-Regex-After") != "1" {
+		t.Fatalf("regex middleware chain not preserved")
 	}
 
-	wg.Wait()
-
-	// 验证路由数量（可能少于100因为有冲突）
-	routes := router.GetRoutes()
-	assert.LessOrEqual(t, 26, len(routes)) // 至少应该有26个不同的路由（a-z）
+	notFound := httptest.NewRecorder()
+	e.ServeHTTP(notFound, httptest.NewRequest(http.MethodGet, "/users/abc", nil))
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("invalid regex path status=%d, want=404", notFound.Code)
+	}
 }
 
-// 测试RESTful资源路由
-func TestResourceRouting(t *testing.T) {
-	router := NewRouter(nil)
+func TestRouterMethods_MixedNamedCatchAllPreservesGinPathValue(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
 
-	// 创建自定义资源处理器
-	handler := &testResourceHandler{}
-
-	// 注册资源
-	router.Resource("/users", handler)
-
-	// 验证6个RESTful路由已注册（GET, GET/:id, POST, PUT/:id, PATCH/:id, DELETE/:id）
-	routes := router.GetRoutes()
-	assert.Equal(t, 6, len(routes))
-	assert.Contains(t, routes, "GET:/users")
-	assert.Contains(t, routes, "GET:/users/:id")
-	assert.Contains(t, routes, "POST:/users")
-	assert.Contains(t, routes, "PUT:/users/:id")
-	assert.Contains(t, routes, "PATCH:/users/:id")
-	assert.Contains(t, routes, "DELETE:/users/:id")
-}
-
-// 测试路由组中的资源路由
-func TestResourceRoutingInGroup(t *testing.T) {
-	router := NewRouter(nil)
-	api := router.Group("/api")
-
-	// 创建自定义资源处理器
-	handler := &testResourceHandler{}
-
-	// 在组中注册资源
-	api.Resource("/users", handler)
-
-	// 验证6个RESTful路由已注册
-	routes := router.GetRoutes()
-	assert.Equal(t, 6, len(routes))
-	assert.Contains(t, routes, "GET:/api/users")
-	assert.Contains(t, routes, "GET:/api/users/:id")
-	assert.Contains(t, routes, "POST:/api/users")
-	assert.Contains(t, routes, "PUT:/api/users/:id")
-	assert.Contains(t, routes, "PATCH:/api/users/:id")
-	assert.Contains(t, routes, "DELETE:/api/users/:id")
-}
-
-// 测试缓存中间件
-func TestCacheMiddleware(t *testing.T) {
-	router := NewRouter(nil)
-
-	// 添加缓存中间件
-	router.Use(router.SetGlobalCacheMiddleware(5*time.Minute, 10*time.Minute))
-
-	// 验证路由器的缓存实例已设置
-	assert.NotNil(t, router.cache)
-
-	// 注册测试路由
-	router.GET("/cache-test", func(c *Context) {
-		// 获取全局缓存
-		cache := c.GetGlobalCache()
-		assert.NotNil(t, cache)
-
-		// 尝试使用缓存
-		cache.Set("test-key", "test-value", 1*time.Minute)
-		value, found := cache.Get("test-key")
-
-		assert.True(t, found)
-		assert.Equal(t, "test-value", value)
-
-		c.String(http.StatusOK, "cache-ok")
+	r.GET("/{config_id}/*path", func(c *engine.Context) {
+		c.JSON(http.StatusOK, engine.H{
+			"config_id": c.Param("config_id"),
+			"path":      c.Param("path"),
+		})
 	})
 
-	// 测试请求
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/cache-test", nil)
-	router.engine.ServeHTTP(w, req)
+	req := httptest.NewRequest(http.MethodGet, "/42/a/b.txt", nil)
+	e.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "cache-ok", w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if body := w.Body.String(); body != `{"config_id":"42","path":"/a/b.txt"}` {
+		t.Fatalf("body=%q", body)
+	}
 }
 
-// 测试Close方法
-func TestRouterClose(t *testing.T) {
-	router := NewRouter(nil)
+func TestRouterMethods_GinNamedCatchAllPreservesSlash(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
 
-	// 添加缓存中间件
-	router.Use(router.SetGlobalCacheMiddleware(5*time.Minute, 10*time.Minute))
+	r.GET("/:config_id/*path", func(c *engine.Context) {
+		c.JSON(http.StatusOK, engine.H{
+			"config_id": c.Param("config_id"),
+			"path":      c.Param("path"),
+		})
+	})
 
-	// 注册一些路由
-	router.GET("/test1", func(c *Context) {})
-	router.GET("/test2", func(c *Context) {})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/42/a/b.txt", nil)
+	e.ServeHTTP(w, req)
 
-	// 关闭路由器
-	err := router.Close()
-	assert.Nil(t, err)
-
-	// 验证资源已释放
-	assert.Nil(t, router.cache)
-	assert.Equal(t, 0, len(router.groups))
-	assert.Equal(t, 0, len(router.routes))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if body := w.Body.String(); body != `{"config_id":"42","path":"/a/b.txt"}` {
+		t.Fatalf("body=%q", body)
+	}
 }
 
-// 测试资源处理器
-type testResourceHandler struct {
-	RestfulHandler // 嵌入默认实现
+func TestRouterMethods_RootNamedCatchAllPreservesSlash(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
+
+	r.GET("/*path", func(c *engine.Context) {
+		c.String(http.StatusOK, c.Param("path"))
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if body := w.Body.String(); body != "/assets/app.js" {
+		t.Fatalf("body=%q", body)
+	}
 }
 
-// 覆盖一些方法以进行测试
-func (h *testResourceHandler) Index(c *Context) {
-	c.String(http.StatusOK, "index")
+func TestRouterGroupAndUse(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
+	r.Use(func(c *engine.Context) {
+		c.Header("X-MW", "1")
+		c.Next()
+	})
+	g := r.Group("/v1")
+	g.POST("/items", func(c *engine.Context) {
+		c.String(http.StatusCreated, "ok")
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/items", nil)
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("group post status")
+	}
+	if w.Header().Get("X-MW") != "1" {
+		t.Fatalf("middleware not executed")
+	}
 }
 
-func (h *testResourceHandler) Show(c *Context) {
-	c.String(http.StatusOK, "show:"+c.Param("id"))
+func TestRouterGroup_VariadicHandlers(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
+	g := r.Group("/v1",
+		func(c *engine.Context) {
+			c.Header("X-Group-Before", "1")
+			c.Next()
+			c.Header("X-Group-After", "1")
+		},
+	)
+
+	order := make([]string, 0, 3)
+	g.GET("/items",
+		func(c *engine.Context) {
+			order = append(order, "route-before")
+			c.Next()
+			order = append(order, "route-after")
+		},
+		func(c *engine.Context) {
+			order = append(order, "handler")
+			c.String(http.StatusOK, "ok")
+		},
+	)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/items", nil)
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if w.Header().Get("X-Group-Before") != "1" || w.Header().Get("X-Group-After") != "1" {
+		t.Fatalf("group middleware chain not preserved")
+	}
+
+	want := []string{"route-before", "handler", "route-after"}
+	if len(order) != len(want) {
+		t.Fatalf("order=%v, want=%v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order=%v, want=%v", order, want)
+		}
+	}
+}
+
+func TestRouterGroupAndUse_AutoRegexRoute(t *testing.T) {
+	e := engine.New()
+	api := e.Router().Group("/api")
+	api.Use(func(c *engine.Context) {
+		c.Header("X-Scoped", "1")
+		c.Next()
+	})
+	api.GET("/users/{id:[0-9]+}", func(c *engine.Context) {
+		c.JSON(http.StatusOK, engine.H{"id": c.Param("id")})
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/users/7", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if body := w.Body.String(); body != `{"id":"7"}` {
+		t.Fatalf("body=%q", body)
+	}
+	if w.Header().Get("X-Scoped") != "1" {
+		t.Fatalf("group middleware not executed for regex route")
+	}
+}
+
+func TestRouter_GetHead(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
+
+	// 使用 GetHead 注册路由
+	r.GetHead("/test", func(c *engine.Context) {
+		c.JSON(200, engine.H{"message": "hello"})
+	})
+
+	r.GetHead("/users/:id", func(c *engine.Context) {
+		c.JSON(200, engine.H{
+			"id":   c.Param("id"),
+			"name": "张三",
+		})
+	})
+
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		expectedCode   int
+		expectedBody   string
+		checkEmptyBody bool
+	}{
+		{
+			name:           "GET request with body",
+			method:         "GET",
+			path:           "/test",
+			expectedCode:   200,
+			expectedBody:   `{"message":"hello"}`,
+			checkEmptyBody: false,
+		},
+		{
+			name:           "HEAD request no body",
+			method:         "HEAD",
+			path:           "/test",
+			expectedCode:   200,
+			expectedBody:   "",
+			checkEmptyBody: true,
+		},
+		{
+			name:           "HEAD with params",
+			method:         "HEAD",
+			path:           "/users/123",
+			expectedCode:   200,
+			expectedBody:   "",
+			checkEmptyBody: true,
+		},
+		{
+			name:           "GET with params",
+			method:         "GET",
+			path:           "/users/123",
+			expectedCode:   200,
+			expectedBody:   `{"id":"123","name":"张三"}`,
+			checkEmptyBody: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			e.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedCode {
+				t.Errorf("status code = %d, want %d", w.Code, tt.expectedCode)
+			}
+
+			body := w.Body.String()
+			if tt.checkEmptyBody {
+				if body != "" {
+					t.Errorf("HEAD request body = %q, want empty", body)
+				}
+			} else {
+				if body != tt.expectedBody {
+					t.Errorf("body = %q, want %q", body, tt.expectedBody)
+				}
+			}
+
+			// HEAD 请求应该保留 Content-Type 头
+			if tt.method == "HEAD" {
+				contentType := w.Header().Get("Content-Type")
+				if contentType == "" {
+					t.Error("HEAD request missing Content-Type header")
+				}
+			}
+		})
+	}
+}
+
+func TestRouter_GetHead_StatusCodes(t *testing.T) {
+	e := engine.New()
+	r := e.Router()
+
+	r.GetHead("/ok", func(c *engine.Context) {
+		c.JSON(200, engine.H{"status": "ok"})
+	})
+
+	r.GetHead("/error", func(c *engine.Context) {
+		c.JSON(400, engine.H{"error": "bad request"})
+	})
+
+	tests := []struct {
+		name         string
+		path         string
+		expectedCode int
+	}{
+		{"200 OK", "/ok", 200},
+		{"400 Bad Request", "/error", 400},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" GET", func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", tt.path, nil)
+			e.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedCode {
+				t.Errorf("GET status code = %d, want %d", w.Code, tt.expectedCode)
+			}
+		})
+
+		t.Run(tt.name+" HEAD", func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("HEAD", tt.path, nil)
+			e.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedCode {
+				t.Errorf("HEAD status code = %d, want %d", w.Code, tt.expectedCode)
+			}
+
+			if w.Body.Len() > 0 {
+				t.Errorf("HEAD request has body, want empty")
+			}
+		})
+	}
+}
+
+// TestRouter_HTTPMiddleware 测试 Chi 风格 / 标准 http.Handler 中间件适配
+func TestRouter_HTTPMiddleware(t *testing.T) {
+	t.Run("middleware calls next", func(t *testing.T) {
+		e := engine.New()
+		r := e.Router()
+
+		// Chi 风格中间件: 在 header 添加标记并调用 next
+		chiMiddleware := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("X-Chi-Middleware", "called")
+				next.ServeHTTP(w, req)
+			})
+		}
+
+		r.UseAny(chiMiddleware)
+
+		r.GET("/test", func(c *engine.Context) {
+			c.JSON(200, engine.H{"message": "ok"})
+		})
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test", nil)
+		e.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Errorf("status code = %d, want 200", w.Code)
+		}
+
+		if w.Header().Get("X-Chi-Middleware") != "called" {
+			t.Error("Chi middleware was not executed")
+		}
+
+		if w.Body.String() != `{"message":"ok"}` {
+			t.Errorf("body = %q, want %q", w.Body.String(), `{"message":"ok"}`)
+		}
+	})
+
+	t.Run("middleware aborts (no next call)", func(t *testing.T) {
+		e := engine.New()
+		r := e.Router()
+
+		// Chi 风格中间件: 直接返回 403，不调用 next
+		blockingMiddleware := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				if _, err := w.Write([]byte("blocked")); err != nil {
+					t.Errorf("write blocked response: %v", err)
+				}
+				// 注意: 不调用 next.ServeHTTP，表示中断执行链
+			})
+		}
+
+		r.UseAny(blockingMiddleware)
+
+		handlerCalled := false
+		r.GET("/test", func(c *engine.Context) {
+			handlerCalled = true
+			c.JSON(200, engine.H{"message": "ok"})
+		})
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test", nil)
+		e.ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("status code = %d, want %d", w.Code, http.StatusForbidden)
+		}
+
+		if w.Body.String() != "blocked" {
+			t.Errorf("body = %q, want %q", w.Body.String(), "blocked")
+		}
+
+		if handlerCalled {
+			t.Error("handler should not be called when middleware aborts")
+		}
+	})
+
+	t.Run("middleware writes response then calls next", func(t *testing.T) {
+		e := engine.New()
+		r := e.Router()
+
+		chiMiddleware := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				if _, err := w.Write([]byte("unauthorized")); err != nil {
+					t.Errorf("write unauthorized response: %v", err)
+				}
+				next.ServeHTTP(w, req)
+			})
+		}
+
+		r.UseAny(chiMiddleware)
+
+		handlerCalled := false
+		r.GET("/test", func(c *engine.Context) {
+			handlerCalled = true
+			c.JSON(200, engine.H{"message": "ok"})
+		})
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test", nil)
+		e.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("status code = %d, want %d", w.Code, http.StatusUnauthorized)
+		}
+
+		if w.Body.String() != "unauthorized" {
+			t.Errorf("body = %q, want %q", w.Body.String(), "unauthorized")
+		}
+
+		if handlerCalled {
+			t.Error("handler should not be called after response is written")
+		}
+	})
+
+	t.Run("multiple http middlewares", func(t *testing.T) {
+		e := engine.New()
+		r := e.Router()
+
+		// 第一个中间件
+		mw1 := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("X-MW1", "1")
+				next.ServeHTTP(w, req)
+			})
+		}
+
+		// 第二个中间件
+		mw2 := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("X-MW2", "2")
+				next.ServeHTTP(w, req)
+			})
+		}
+
+		r.UseAny(mw1, mw2)
+
+		r.GET("/test", func(c *engine.Context) {
+			c.JSON(200, engine.H{"message": "ok"})
+		})
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test", nil)
+		e.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Errorf("status code = %d, want 200", w.Code)
+		}
+
+		if w.Header().Get("X-MW1") != "1" {
+			t.Error("first middleware not executed")
+		}
+
+		if w.Header().Get("X-MW2") != "2" {
+			t.Error("second middleware not executed")
+		}
+	})
+
+	t.Run("mixed middleware types", func(t *testing.T) {
+		e := engine.New()
+		r := e.Router()
+
+		// Chi 风格中间件
+		httpMw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("X-HTTP-MW", "http")
+				next.ServeHTTP(w, req)
+			})
+		}
+
+		// 增强型中间件
+		enhancedMw := func(c *engine.Context) {
+			c.Header("X-Enhanced-MW", "enhanced")
+			c.Next()
+		}
+
+		// 原始 gin 中间件
+		ginMw := func(c *gin.Context) {
+			c.Header("X-Gin-MW", "gin")
+			c.Next()
+		}
+
+		r.UseAny(httpMw, enhancedMw, ginMw)
+
+		r.GET("/test", func(c *engine.Context) {
+			c.JSON(200, engine.H{"message": "ok"})
+		})
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test", nil)
+		e.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Errorf("status code = %d, want 200", w.Code)
+		}
+
+		if w.Header().Get("X-HTTP-MW") != "http" {
+			t.Error("http middleware not executed")
+		}
+
+		if w.Header().Get("X-Enhanced-MW") != "enhanced" {
+			t.Error("enhanced middleware not executed")
+		}
+
+		if w.Header().Get("X-Gin-MW") != "gin" {
+			t.Error("gin middleware not executed")
+		}
+	})
+}
+
+func TestRouter_Any(t *testing.T) {
+	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			e := engine.New()
+			r := e.Router()
+
+			r.Any("/test", func(c *engine.Context) {
+				c.JSON(200, engine.H{"method": method})
+			})
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(method, "/test", nil)
+			e.ServeHTTP(w, req)
+
+			if w.Code != 200 {
+				t.Errorf("%s request: status code = %d, want 200", method, w.Code)
+			}
+		})
+	}
 }

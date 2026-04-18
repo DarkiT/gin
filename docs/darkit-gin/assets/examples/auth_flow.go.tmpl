@@ -1,0 +1,43 @@
+package main
+
+import (
+	"time"
+
+	"github.com/darkit/gin"
+	"github.com/darkit/gin/auth"
+)
+
+func main() {
+	e := gin.New(
+		gin.WithAuth(auth.AuthConfig{
+			Secret:     "replace-me",
+			Expiry:     24 * time.Hour,
+			TokenStyle: auth.TokenStyleJWT,
+		}),
+	)
+
+	r := e.Router()
+	r.POST("/login", func(c *gin.Context) {
+		token, err := c.Auth().Login("user-1001", "web")
+		if err != nil {
+			c.InternalError(err.Error())
+			return
+		}
+		c.Success(gin.H{"token": token})
+	})
+
+	r.GET("/profile", func(c *gin.Context) {
+		if err := c.Auth().CheckLogin(); err != nil {
+			c.Unauthorized(err.Error())
+			return
+		}
+		loginID, err := c.Auth().LoginID()
+		if err != nil {
+			c.Unauthorized(err.Error())
+			return
+		}
+		c.Success(gin.H{"login_id": loginID})
+	})
+
+	_ = e.Run(":8080")
+}

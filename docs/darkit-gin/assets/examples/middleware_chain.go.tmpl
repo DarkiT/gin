@@ -1,0 +1,33 @@
+package main
+
+import (
+	"time"
+
+	"github.com/darkit/gin"
+	"github.com/darkit/gin/middleware"
+)
+
+func main() {
+	e := gin.New()
+	e.UseAny(
+		middleware.CORS(),
+		middleware.RealIP(),
+		middleware.Timeout(5*time.Second),
+		middleware.RateLimit(middleware.RateLimitConfig{
+			RequestsPerSecond: 100,
+			Burst:             200,
+		}),
+	)
+
+	r := e.Router()
+	r.Liveness()
+
+	r.GET("/api/hello", func(c *gin.Context) {
+		c.Success(gin.H{
+			"message":    "ok",
+			"request_id": c.RequestID(),
+		})
+	})
+
+	_ = e.Run(":8080")
+}
