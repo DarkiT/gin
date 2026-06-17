@@ -58,6 +58,14 @@ func (m *Manager) SetShutdownTimeout(d time.Duration) {
 	m.mu.Unlock()
 }
 
+// ShutdownTimeout 返回当前优雅关闭超时时间。
+func (m *Manager) ShutdownTimeout() time.Duration {
+	m.mu.RLock()
+	timeout := m.shutdownTimeout
+	m.mu.RUnlock()
+	return timeout
+}
+
 // OnStart 注册启动前回调。
 func (m *Manager) OnStart(hooks ...Hook) {
 	m.mu.Lock()

@@ -23,7 +23,7 @@ type benchWrapper struct {
 func BenchmarkMaskValue_LargeStructSlice(b *testing.B) {
 	const size = 2000
 	users := make([]benchWrapper, 0, size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		user := benchUser{
 			Mobile:  fmt.Sprintf("138%08d", i),
 			Email:   fmt.Sprintf("user%04d@example.com", i),

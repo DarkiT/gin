@@ -5,7 +5,7 @@
 ## 模块用途
 
 - 统一短信发送接口 `SMSProvider`。
-- 支持全局默认服务商初始化，便于与 `Engine` 集成。
+- 支持独立创建短信服务实例，并可由 `Engine` 在运行阶段托管。
 - 提供验证码生成、内存存储、失败计数、锁定与自动过期清理。
 
 ## 关键类型与函数
@@ -18,19 +18,30 @@
   - `SignName`
   - `Region`
   - `AppID`：腾讯云必填
+- `type Service`
+  - `NewService(cfg)`：创建独立短信服务（推荐主路径）
+  - `Send(...)`
+  - `SendCode(...)`
+  - `VerifyCode(...)`
+  - `IsLocked(...)`
+  - `Unlock(...)`
 - `type SMSProvider interface`
   - `Send(mobile, templateID string, params map[string]string) error`
 
 ### 服务商管理
 
 - `RegisterProvider(name, factory)`
+- `GetConfig()`
+
+兼容旧代码的包级全局函数：
+
 - `InitDefaultProvider(cfg)`
 - `DefaultProvider()`
-- `GetConfig()`
+- `SendSMS(mobile, templateID, params)`
 
 ### 短信发送与验证码
 
-- `SendSMS(mobile, templateID, params)`：直接发送短信
+- `Service.Send(mobile, templateID, params)`：通过当前服务实例直接发送短信
 - `SendCode(mobile, opts...)`：生成验证码，可选自动短信发送
 - `VerifyCode(mobile, code)`：校验后即删除，一次性使用
 - `IsLocked(mobile)`：检查手机号是否被锁定
@@ -81,7 +92,7 @@
 
 ## 使用示例
 
-### 初始化服务商
+### 创建独立短信服务
 
 ```go
 import (
@@ -97,7 +108,8 @@ cfg := sms.SMSConfig{
     Region:    "cn-hangzhou",
 }
 
-if err := sms.InitDefaultProvider(cfg); err != nil {
+service, err := sms.NewService(cfg)
+if err != nil {
     panic(err)
 }
 ```
@@ -105,7 +117,7 @@ if err := sms.InitDefaultProvider(cfg); err != nil {
 ### 发送普通短信
 
 ```go
-err := sms.SendSMS("13800138000", "SMS_123456", map[string]string{
+err := service.Send("13800138000", "SMS_123456", map[string]string{
     "name": "Alice",
 })
 ```
@@ -113,7 +125,7 @@ err := sms.SendSMS("13800138000", "SMS_123456", map[string]string{
 ### 发送验证码短信
 
 ```go
-code, err := sms.SendCode(
+code, err := service.SendCode(
     "13800138000",
     sms.WithTemplateID("SMS_LOGIN_CODE"),
     sms.WithTemplateParams(map[string]string{"product": "Demo"}),
@@ -127,18 +139,21 @@ _ = err
 ### 校验验证码与锁定控制
 
 ```go
-ok := sms.VerifyCode("13800138000", "123456")
-if !ok && sms.IsLocked("13800138000") {
-    _ = sms.Unlock("13800138000")
+ok := service.VerifyCode("13800138000", "123456")
+if !ok && service.IsLocked("13800138000") {
+    _ = service.Unlock("13800138000")
 }
 ```
 
 ## 与 Engine 的集成
 
-- `gin.WithSMS(cfg)`：初始化 `Engine` 时保存配置，并调用 `sms.InitDefaultProvider`。
-- 业务代码通常只需在启动阶段完成一次 provider 注册与配置。
+- `gin.WithSMS(cfg)`：在构造阶段保存并校验短信配置。
+- 运行阶段 `Engine` 会自动初始化 engine-scoped `SMS` service。
+- 请求内优先通过 `c.SMS()` 获取当前引擎绑定的短信服务。
+- 应用级代码可通过 `app.SMS()` 获取当前引擎绑定的短信服务。
 - 若使用阿里云或腾讯云，请记得 side-effect import：
   - `_ "github.com/darkit/gin/pkg/sms/providers"`
+- `InitDefaultProvider` / `SendSMS` 等全局函数仍可用于脱离 `Engine` 的独立脚本或兼容旧代码，但不再是框架集成主路径。
 
 ```go
 e := gin.New(

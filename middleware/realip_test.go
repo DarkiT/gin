@@ -96,6 +96,32 @@ func TestRealIPFromRemoteAddr(t *testing.T) {
 	}
 }
 
+func TestRealIPHonorsTrustedProxies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var got string
+	r := gin.New()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		t.Fatalf("set trusted proxies: %v", err)
+	}
+	r.Use(RealIP())
+	r.GET("/", func(c *gin.Context) {
+		got = GetRealIP(c)
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+	req.Header.Set("X-Real-IP", "198.51.100.10")
+	req.RemoteAddr = "192.0.2.5:1234"
+	r.ServeHTTP(w, req)
+
+	if got != "192.0.2.5" {
+		t.Fatalf("expected trusted proxy policy to use remote addr, got %q", got)
+	}
+}
+
 func TestRealIPRemoteAddrNoPort(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

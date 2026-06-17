@@ -1,9 +1,11 @@
 package sms
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"strings"
 	"sync"
@@ -81,9 +83,7 @@ func WithTemplateParams(params map[string]string) SMSOption {
 		if o.params == nil {
 			o.params = make(map[string]string)
 		}
-		for k, v := range params {
-			o.params[k] = v
-		}
+		maps.Copy(o.params, params)
 	}
 }
 
@@ -132,19 +132,24 @@ var (
 	globalCodeStoreOnce sync.Once
 )
 
+// NewCodeManager 创建独立验证码存储实例。
+func NewCodeManager() *CodeManager {
+	store := &CodeManager{
+		store:        make(map[string]*codeEntry),
+		failures:     make(map[string]failureInfo),
+		maxFailures:  5,
+		lockDuration: 15 * time.Minute,
+		done:         make(chan struct{}),
+	}
+	store.wg.Add(1)
+	go store.cleanupExpired()
+	return store
+}
+
 // getCodeStore 获取全局验证码存储
 func getCodeStore() *CodeManager {
 	globalCodeStoreOnce.Do(func() {
-		globalCodeStore = &CodeManager{
-			store:        make(map[string]*codeEntry),
-			failures:     make(map[string]failureInfo),
-			maxFailures:  5,
-			lockDuration: 15 * time.Minute,
-			done:         make(chan struct{}),
-		}
-		// 启动清理 goroutine，每分钟清理一次过期条目
-		globalCodeStore.wg.Add(1)
-		go globalCodeStore.cleanupExpired()
+		globalCodeStore = NewCodeManager()
 	})
 	return globalCodeStore
 }
@@ -315,7 +320,7 @@ func generateCode(length int, codeType string) (string, error) {
 	code := make([]byte, length)
 	charsetLen := big.NewInt(int64(len(charset)))
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		n, err := rand.Int(rand.Reader, charsetLen)
 		if err != nil {
 			return "", fmt.Errorf("生成随机数失败: %w", err)
@@ -347,6 +352,10 @@ func applyOptions(opts ...SMSOption) *smsOptions {
 // SendCode 发送验证码。
 // 返回生成的验证码和错误信息。
 func SendCode(mobile string, opts ...SMSOption) (string, error) {
+	return sendCode(context.Background(), nil, mobile, opts...)
+}
+
+func sendCode(_ context.Context, service *Service, mobile string, opts ...SMSOption) (string, error) {
 	mobile = strings.TrimSpace(mobile)
 	if mobile == "" {
 		return "", ErrSMSMobileMissing
@@ -361,7 +370,7 @@ func SendCode(mobile string, opts ...SMSOption) (string, error) {
 	}
 
 	// 存储验证码
-	store := getCodeStore()
+	store := resolveCodeStore(service)
 	store.configure(options.maxFailures, options.lockDuration)
 	store.set(mobile, code, options.codeExpiry)
 
@@ -373,7 +382,7 @@ func SendCode(mobile string, opts ...SMSOption) (string, error) {
 		}
 		options.params["code"] = code
 
-		if err := SendSMS(mobile, options.templateID, options.params); err != nil {
+		if err := sendSMSWithService(service, mobile, options.templateID, options.params); err != nil {
 			// 发送失败，删除已存储的验证码
 			store.delete(mobile)
 			return "", err
@@ -385,6 +394,10 @@ func SendCode(mobile string, opts ...SMSOption) (string, error) {
 
 // VerifyCode 验证验证码。
 func VerifyCode(mobile, code string) bool {
+	return verifyCodeStore(getCodeStore(), mobile, code)
+}
+
+func verifyCodeStore(store *CodeManager, mobile, code string) bool {
 	mobile = strings.TrimSpace(mobile)
 	code = strings.TrimSpace(code)
 
@@ -392,7 +405,6 @@ func VerifyCode(mobile, code string) bool {
 		return false
 	}
 
-	store := getCodeStore()
 	if store.isLocked(mobile) {
 		return false
 	}
@@ -415,43 +427,54 @@ func VerifyCode(mobile, code string) bool {
 
 // IsLocked 检查手机号是否被锁定。
 func IsLocked(mobile string) bool {
+	return isLockedStore(getCodeStore(), mobile)
+}
+
+func isLockedStore(store *CodeManager, mobile string) bool {
 	mobile = strings.TrimSpace(mobile)
 	if mobile == "" {
 		return false
 	}
-	store := getCodeStore()
 	return store.isLocked(mobile)
 }
 
 // Unlock 手动解锁手机号。
 func Unlock(mobile string) error {
+	return unlockStore(getCodeStore(), mobile)
+}
+
+func unlockStore(store *CodeManager, mobile string) error {
 	mobile = strings.TrimSpace(mobile)
 	if mobile == "" {
 		return ErrSMSMobileMissing
 	}
-	store := getCodeStore()
 	store.unlock(mobile)
 	return nil
 }
 
 // GetFailures 获取失败次数。
 func GetFailures(mobile string) int {
+	return getFailuresStore(getCodeStore(), mobile)
+}
+
+func getFailuresStore(store *CodeManager, mobile string) int {
 	mobile = strings.TrimSpace(mobile)
 	if mobile == "" {
 		return 0
 	}
-	store := getCodeStore()
 	return store.getFailures(mobile)
 }
 
 // GetCode 获取验证码（仅用于测试）。
 func GetCode(mobile string) (string, error) {
+	return getCodeStoreValue(getCodeStore(), mobile)
+}
+
+func getCodeStoreValue(store *CodeManager, mobile string) (string, error) {
 	mobile = strings.TrimSpace(mobile)
 	if mobile == "" {
 		return "", ErrSMSMobileMissing
 	}
-
-	store := getCodeStore()
 	code, exists := store.get(mobile)
 	if !exists {
 		return "", ErrCodeNotFound
@@ -462,11 +485,27 @@ func GetCode(mobile string) (string, error) {
 
 // DeleteCode 删除验证码。
 func DeleteCode(mobile string) {
+	deleteCodeStoreValue(getCodeStore(), mobile)
+}
+
+func deleteCodeStoreValue(store *CodeManager, mobile string) {
 	mobile = strings.TrimSpace(mobile)
 	if mobile == "" {
 		return
 	}
-
-	store := getCodeStore()
 	store.delete(mobile)
+}
+
+func resolveCodeStore(service *Service) *CodeManager {
+	if service != nil {
+		return service.codeStore()
+	}
+	return getCodeStore()
+}
+
+func sendSMSWithService(service *Service, mobile, templateID string, params map[string]string) error {
+	if service != nil {
+		return service.Send(mobile, templateID, params)
+	}
+	return SendSMS(mobile, templateID, params)
 }

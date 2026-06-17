@@ -46,7 +46,7 @@ func TestInterceptor_RequestInterceptor(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, 400, w.Code)
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "missing API key", resp["error"])
 
@@ -69,7 +69,7 @@ func TestInterceptor_ResponseInterceptor(t *testing.T) {
 	r.Use(Interceptor(InterceptorConfig{
 		OnResponse: func(c *gin.Context, body []byte) ([]byte, error) {
 			// 修改响应：添加签名
-			var data map[string]interface{}
+			var data map[string]any
 			if err := json.Unmarshal(body, &data); err != nil {
 				return body, nil
 			}
@@ -88,7 +88,7 @@ func TestInterceptor_ResponseInterceptor(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "hello", resp["message"])
 	assert.Equal(t, "test-signature", resp["signature"])
@@ -115,7 +115,7 @@ func TestInterceptor_ResponseError(t *testing.T) {
 
 	assert.Equal(t, 500, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "响应处理失败", resp["error"])
 }
@@ -214,7 +214,7 @@ func TestInterceptor_ConcurrentRequests(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
 
-	for i := 0; i < concurrency; i++ {
+	for range concurrency {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest("GET", "/test", nil)
@@ -255,7 +255,7 @@ func TestInterceptor_ErrorPropagation(t *testing.T) {
 
 	assert.Equal(t, 400, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "unauthorized", resp["error"])
 
@@ -287,7 +287,7 @@ func TestInterceptor_NoInterceptor(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "ok", resp["status"])
 }
@@ -315,7 +315,7 @@ func TestInterceptor_OnlyRequestInterceptor(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "2024-01-01", resp["request_time"])
 }
@@ -326,7 +326,7 @@ func TestInterceptor_OnlyResponseInterceptor(t *testing.T) {
 
 	r.Use(Interceptor(InterceptorConfig{
 		OnResponse: func(c *gin.Context, body []byte) ([]byte, error) {
-			var data map[string]interface{}
+			var data map[string]any
 			if err := json.Unmarshal(body, &data); err != nil {
 				return body, nil
 			}
@@ -345,7 +345,7 @@ func TestInterceptor_OnlyResponseInterceptor(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "test", resp["message"])
 	assert.Equal(t, "2024-01-01", resp["timestamp"])

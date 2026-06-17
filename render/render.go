@@ -1,6 +1,10 @@
 package render
 
-import original "github.com/gin-gonic/gin/render"
+import (
+	"net/http"
+
+	original "github.com/gin-gonic/gin/render"
+)
 
 // ---- 接口 ----
 type (
@@ -54,12 +58,17 @@ type (
 	Delims = original.Delims
 )
 
-// ---- 工具函数 ----
-var (
-	// WriteJSON 写入 JSON 响应内容。
-	WriteJSON = original.WriteJSON
-	// WriteMsgPack 写入 MsgPack 响应内容。
-	WriteMsgPack = original.WriteMsgPack
-	// WriteString 写入字符串响应内容。
-	WriteString = original.WriteString
-)
+// WriteJSON 写入 JSON 响应内容。
+func WriteJSON(w http.ResponseWriter, obj any) error {
+	return original.WriteJSON(w, obj)
+}
+
+// WriteMsgPack 写入 MsgPack 响应内容。
+func WriteMsgPack(w http.ResponseWriter, obj any) error {
+	return original.WriteMsgPack(w, obj)
+}
+
+// WriteString 写入字符串响应内容。
+func WriteString(w http.ResponseWriter, format string, data []any) error {
+	return original.WriteString(w, format, data)
+}

@@ -30,6 +30,8 @@ const (
 	MIMEYAML2 = original.MIMEYAML2
 	// MIMETOML 表示 TOML 的 MIME 类型。
 	MIMETOML = original.MIMETOML
+	// MIMEBSON 表示 BSON 的 MIME 类型。
+	MIMEBSON = original.MIMEBSON
 )
 
 // ---- 接口与类型 ----
@@ -85,6 +87,8 @@ var (
 	Plain = original.Plain
 	// TOML 为 TOML 绑定器。
 	TOML = original.TOML
+	// BSON 为 BSON 绑定器。
+	BSON = original.BSON
 )
 
 var (
@@ -98,10 +102,12 @@ var (
 	ErrMultiFileHeaderLenInvalid = original.ErrMultiFileHeaderLenInvalid
 )
 
-// ---- 方法 ----
-var (
-	// Default 根据 Content-Type 返回默认绑定器。
-	Default = original.Default
-	// MapFormWithTag 将表单映射到结构体字段。
-	MapFormWithTag = original.MapFormWithTag
-)
+// Default 根据 Content-Type 返回默认绑定器。
+func Default(method, contentType string) Binding {
+	return original.Default(method, contentType)
+}
+
+// MapFormWithTag 将表单映射到结构体字段。
+func MapFormWithTag(ptr any, form map[string][]string, tag string) error {
+	return original.MapFormWithTag(ptr, form, tag)
+}

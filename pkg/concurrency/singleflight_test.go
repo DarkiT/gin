@@ -13,7 +13,7 @@ func TestGroup_Do_SingleExecution(t *testing.T) {
 	var g Group
 	var calls int32
 
-	fn := func() (interface{}, error) {
+	fn := func() (any, error) {
 		atomic.AddInt32(&calls, 1)
 		return "result", nil
 	}
@@ -35,20 +35,20 @@ func TestGroup_Do_Concurrent(t *testing.T) {
 	var g Group
 	var calls int32
 
-	fn := func() (interface{}, error) {
+	fn := func() (any, error) {
 		atomic.AddInt32(&calls, 1)
 		time.Sleep(50 * time.Millisecond)
 		return "result", nil
 	}
 
 	const goroutines = 10
-	results := make(chan interface{}, goroutines)
+	results := make(chan any, goroutines)
 	errors := make(chan error, goroutines)
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			result, err := g.Do("key1", fn)
@@ -85,7 +85,7 @@ func TestGroup_Do_DifferentKeys(t *testing.T) {
 	var g Group
 	var calls int32
 
-	fn := func() (interface{}, error) {
+	fn := func() (any, error) {
 		atomic.AddInt32(&calls, 1)
 		return "result", nil
 	}
@@ -128,7 +128,7 @@ func TestGroup_Do_Error(t *testing.T) {
 	var calls int32
 	testErr := errors.New("test error")
 
-	fn := func() (interface{}, error) {
+	fn := func() (any, error) {
 		atomic.AddInt32(&calls, 1)
 		time.Sleep(20 * time.Millisecond) // 确保并发
 		return nil, testErr
@@ -140,7 +140,7 @@ func TestGroup_Do_Error(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			_, err := g.Do("key1", fn)
@@ -169,7 +169,7 @@ func TestGroup_Do_Sequential(t *testing.T) {
 	var g Group
 	var calls int32
 
-	fn := func() (interface{}, error) {
+	fn := func() (any, error) {
 		count := atomic.AddInt32(&calls, 1)
 		return count, nil
 	}
@@ -203,8 +203,8 @@ func TestGroup_Do_MixedKeysAndConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	callCounts := make(map[string]int)
 
-	fn := func(key string) func() (interface{}, error) {
-		return func() (interface{}, error) {
+	fn := func(key string) func() (any, error) {
+		return func() (any, error) {
 			mu.Lock()
 			callCounts[key]++
 			mu.Unlock()
@@ -218,7 +218,7 @@ func TestGroup_Do_MixedKeysAndConcurrency(t *testing.T) {
 	wg.Add(goroutines)
 
 	// 10 个 goroutine 访问 key1，10 个访问 key2，10 个访问 key3
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		key := ""
 		if i < 10 {
 			key = "key1"

@@ -11,12 +11,12 @@ type Group struct {
 
 type call struct {
 	wg  sync.WaitGroup
-	val interface{}
+	val any
 	err error
 }
 
 // Do 执行函数，同一 key 只执行一次
-func (g *Group) Do(key string, fn func() (interface{}, error)) (interface{}, error) {
+func (g *Group) Do(key string, fn func() (any, error)) (any, error) {
 	g.mu.Lock()
 	if g.m == nil {
 		g.m = make(map[string]*call)

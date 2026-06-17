@@ -141,12 +141,10 @@ func TestManagerConcurrentWait(t *testing.T) {
 	waitState(t, mgr, StateRunning)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 5 {
+		wg.Go(func() {
 			mgr.Wait()
-		}()
+		})
 	}
 
 	sendSignal()

@@ -211,6 +211,6 @@ func main() {
 
 ## 进一步阅读
 
-- [根目录 README](../../README.md)
+- [根目录 README](../README.md)
 - [静态资源示例说明](../../examples/static/README.md)
 - [静态资源设计说明](../../docs/static-design.md)

@@ -1,6 +1,7 @@
 package sms
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -66,23 +67,39 @@ var (
 // ProviderFactory 表示服务商工厂函数。
 type ProviderFactory func(cfg SMSConfig) (SMSProvider, error)
 
-var providerFactories = map[string]ProviderFactory{}
+var (
+	providerFactories   = map[string]ProviderFactory{}
+	providerFactoriesMu sync.RWMutex
+)
 
 // RegisterProvider 注册短信服务商。
 func RegisterProvider(name string, factory ProviderFactory) {
+	providerFactoriesMu.Lock()
 	providerFactories[name] = factory
+	providerFactoriesMu.Unlock()
+}
+
+// ValidateConfig 校验短信配置是否满足基础要求且服务商已注册。
+func ValidateConfig(cfg SMSConfig) error {
+	if err := validateConfig(cfg); err != nil {
+		return err
+	}
+	if _, ok := getProviderFactory(cfg.Provider); !ok {
+		return ErrSMSProviderInvalid
+	}
+	if cfg.Provider == "tencent" && strings.TrimSpace(cfg.AppID) == "" {
+		return ErrSMSAppIDMissing
+	}
+	return nil
 }
 
 // InitDefaultProvider 初始化全局短信服务商。
 func InitDefaultProvider(cfg SMSConfig) error {
-	if err := validateConfig(cfg); err != nil {
+	if err := ValidateConfig(cfg); err != nil {
 		return err
 	}
 
-	factory, ok := providerFactories[cfg.Provider]
-	if !ok {
-		return ErrSMSProviderInvalid
-	}
+	factory, _ := getProviderFactory(cfg.Provider)
 
 	var initErr error
 	smsProviderOnce.Do(func() {
@@ -155,4 +172,101 @@ func validateConfig(cfg SMSConfig) error {
 		return ErrSMSSignNameMissing
 	}
 	return nil
+}
+
+// Service 表示 engine-scoped 的短信服务。
+type Service struct {
+	provider SMSProvider
+	codes    *CodeManager
+}
+
+// NewService 创建一个短信服务实例。
+func NewService(cfg SMSConfig) (*Service, error) {
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	factory, _ := getProviderFactory(cfg.Provider)
+
+	provider, err := factory(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Service{
+		provider: provider,
+		codes:    NewCodeManager(),
+	}, nil
+}
+
+func getProviderFactory(provider string) (ProviderFactory, bool) {
+	providerFactoriesMu.RLock()
+	factory, ok := providerFactories[provider]
+	providerFactoriesMu.RUnlock()
+	return factory, ok
+}
+
+// Send 通过当前服务发送短信。
+func (s *Service) Send(mobile, templateID string, params map[string]string) error {
+	mobile = strings.TrimSpace(mobile)
+	if mobile == "" {
+		return ErrSMSMobileMissing
+	}
+	if strings.TrimSpace(templateID) == "" {
+		return ErrSMSTemplateIDMissing
+	}
+	if s == nil || s.provider == nil {
+		return ErrSMSNotInitialized
+	}
+	return s.provider.Send(mobile, templateID, params)
+}
+
+// SendCode 发送验证码。
+func (s *Service) SendCode(mobile string, opts ...SMSOption) (string, error) {
+	return sendCode(context.Background(), s, mobile, opts...)
+}
+
+// VerifyCode 验证验证码。
+func (s *Service) VerifyCode(mobile, code string) bool {
+	return verifyCodeStore(s.codeStore(), mobile, code)
+}
+
+// IsLocked 检查手机号是否被锁定。
+func (s *Service) IsLocked(mobile string) bool {
+	return isLockedStore(s.codeStore(), mobile)
+}
+
+// Unlock 手动解锁手机号。
+func (s *Service) Unlock(mobile string) error {
+	return unlockStore(s.codeStore(), mobile)
+}
+
+// GetFailures 获取失败次数。
+func (s *Service) GetFailures(mobile string) int {
+	return getFailuresStore(s.codeStore(), mobile)
+}
+
+// GetCode 获取验证码（仅用于测试）。
+func (s *Service) GetCode(mobile string) (string, error) {
+	return getCodeStoreValue(s.codeStore(), mobile)
+}
+
+// DeleteCode 删除验证码。
+func (s *Service) DeleteCode(mobile string) {
+	deleteCodeStoreValue(s.codeStore(), mobile)
+}
+
+// Close 停止后台清理任务。
+func (s *Service) Close() {
+	if s == nil || s.codes == nil {
+		return
+	}
+	s.codes.Close()
+}
+
+func (s *Service) codeStore() *CodeManager {
+	if s == nil || s.codes == nil {
+		return getCodeStore()
+	}
+	return s.codes
 }

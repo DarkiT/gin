@@ -1,6 +1,8 @@
 package sms
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -194,6 +196,28 @@ func TestProviderRegistration(t *testing.T) {
 	if err := InitDefaultProvider(invalidCfg); err != ErrSMSProviderInvalid {
 		t.Errorf("应该返回 ErrSMSProviderInvalid，实际: %v", err)
 	}
+}
+
+func TestProviderRegistryConcurrentAccess(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("concurrent-provider-%d", i)
+			RegisterProvider(name, newMockProvider)
+			err := ValidateConfig(SMSConfig{
+				Provider:  name,
+				AccessKey: "test-key",
+				SecretKey: "test-secret",
+				SignName:  "测试签名",
+			})
+			if err != nil {
+				t.Errorf("ValidateConfig(%s): %v", name, err)
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func TestVerifyCodeBruteForceProtection(t *testing.T) {

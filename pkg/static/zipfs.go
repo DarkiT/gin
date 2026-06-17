@@ -615,12 +615,14 @@ func (zfs *ZipFileSystem) ServeHTTP(c *gin.Context) {
 
 	var service *Service
 	if zfs.config.HistoryFallback || zfs.config.NotFoundFile != "" {
-		service = NewSiteService(zfs,
+		service = NewSiteService(
+			zfs,
 			WithIndexFile(zfs.config.IndexFile),
 			WithNotFoundFile(zfs.config.NotFoundFile),
 		)
 		if !zfs.config.HistoryFallback {
-			service = NewSiteService(zfs,
+			service = NewSiteService(
+				zfs,
 				WithIndexFile(zfs.config.IndexFile),
 				WithNotFoundFile(zfs.config.NotFoundFile),
 				WithoutHistoryFallback(),

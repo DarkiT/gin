@@ -375,6 +375,7 @@ RequestID
 
 `Idempotent()` 侧重“命中时重放，异常时不扩散”：
 
+- 默认实际 key 由 `method + request path + Idempotency-Key + namespace` 哈希得到，避免同 key 跨路由或跨方法 replay
 - 命中缓存 → 直接写缓存状态码与 body，`Abort()`
 - 写入 store 失败 → 静默忽略，不回滚当前请求
 - 若中间链已 `Abort()` → 不再缓存本次响应
@@ -407,7 +408,7 @@ RequestID
 
 ### 7.4 Idempotent
 
-- 默认 key 源于 `Idempotency-Key`
+- 默认 key 维度为 `method + request path + Idempotency-Key`，可用 `WithIdempotentNamespaceFunc` 追加租户/主体隔离
 - Store 支持 TTL
 - 内存存储采用 32 分片减少锁竞争
 - 适合写接口结果重放，不适合长时间历史审计

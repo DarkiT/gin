@@ -161,7 +161,8 @@ func TestCache_CustomKey(t *testing.T) {
 	callCount := 0
 
 	// 使用自定义键生成函数（只使用路径，忽略查询参数）
-	router.GET("/test", Cache(time.Minute,
+	router.GET("/test", Cache(
+		time.Minute,
 		WithCacheKey(func(c *gin.Context) string {
 			return "cache:custom:" + c.Request.URL.Path
 		}),
@@ -248,7 +249,8 @@ func TestCache_OnlySuccessResponses(t *testing.T) {
 func TestCache_WithCacheControl(t *testing.T) {
 	router := gin.New()
 
-	router.GET("/test", Cache(time.Minute,
+	router.GET("/test", Cache(
+		time.Minute,
 		WithCacheControl("public, max-age=60"),
 	), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "hello"})
@@ -272,7 +274,8 @@ func TestCache_WithCacheControl(t *testing.T) {
 func TestCache_WithVary(t *testing.T) {
 	router := gin.New()
 
-	router.GET("/test", Cache(time.Minute,
+	router.GET("/test", Cache(
+		time.Minute,
 		WithCacheVary("Accept-Language", "Accept-Encoding"),
 	), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "hello"})
@@ -296,11 +299,12 @@ func TestCache_WithVary(t *testing.T) {
 
 // TestCache_WithCustomStore 测试自定义存储
 func TestCache_WithCustomStore(t *testing.T) {
-	store := cache.NewMemoryCache()
+	store := cache.NewMemory()
 	router := gin.New()
 	callCount := 0
 
-	router.GET("/test", Cache(time.Minute,
+	router.GET("/test", Cache(
+		time.Minute,
 		WithCacheStore(store),
 	), func(c *gin.Context) {
 		callCount++
@@ -440,4 +444,146 @@ func TestETag_DifferentContent(t *testing.T) {
 	etag2 := w2.Header().Get("ETag")
 
 	assert.NotEqual(t, etag1, etag2) // 不同内容应该有不同的 ETag
+}
+
+func TestCache_SkipsAuthenticatedRequestsByDefault(t *testing.T) {
+	router := gin.New()
+	callCount := 0
+
+	router.GET("/profile", Cache(time.Minute), func(c *gin.Context) {
+		callCount++
+		c.String(http.StatusOK, c.GetHeader("Authorization")+":call-%d", callCount)
+	})
+
+	w1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/profile", nil)
+	req1.Header.Set("Authorization", "Bearer user-a")
+	router.ServeHTTP(w1, req1)
+
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/profile", nil)
+	req2.Header.Set("Authorization", "Bearer user-b")
+	router.ServeHTTP(w2, req2)
+
+	assert.Empty(t, w1.Header().Get("X-Cache"))
+	assert.Empty(t, w2.Header().Get("X-Cache"))
+	assert.Contains(t, w1.Body.String(), "Bearer user-a:call-1")
+	assert.Contains(t, w2.Body.String(), "Bearer user-b:call-2")
+	assert.Equal(t, 2, callCount)
+}
+
+func TestCache_VaryRequestHeadersPartitionCacheKey(t *testing.T) {
+	router := gin.New()
+	callCount := 0
+
+	router.GET("/localized", Cache(
+		time.Minute,
+		WithCacheVary("Accept-Language"),
+	), func(c *gin.Context) {
+		callCount++
+		c.String(http.StatusOK, c.GetHeader("Accept-Language")+":call-%d", callCount)
+	})
+
+	w1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/localized", nil)
+	req1.Header.Set("Accept-Language", "en-US")
+	router.ServeHTTP(w1, req1)
+
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/localized", nil)
+	req2.Header.Set("Accept-Language", "zh-CN")
+	router.ServeHTTP(w2, req2)
+
+	w3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodGet, "/localized", nil)
+	req3.Header.Set("Accept-Language", "en-US")
+	router.ServeHTTP(w3, req3)
+
+	assert.Equal(t, "MISS", w1.Header().Get("X-Cache"))
+	assert.Equal(t, "MISS", w2.Header().Get("X-Cache"))
+	assert.Equal(t, "HIT", w3.Header().Get("X-Cache"))
+	assert.Contains(t, w1.Body.String(), "en-US:call-1")
+	assert.Contains(t, w2.Body.String(), "zh-CN:call-2")
+	assert.Contains(t, w3.Body.String(), "en-US:call-1")
+	assert.Equal(t, 2, callCount)
+}
+
+func TestCache_DoesNotStorePrivateOrCookieResponses(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*gin.Context, int)
+	}{
+		{
+			name: "set cookie",
+			handler: func(c *gin.Context, calls int) {
+				c.SetCookie("sid", "abc", 60, "/", "", false, true)
+				c.String(http.StatusOK, "cookie-call-%d", calls)
+			},
+		},
+		{
+			name: "private cache control",
+			handler: func(c *gin.Context, calls int) {
+				c.Header("Cache-Control", "private, max-age=60")
+				c.String(http.StatusOK, "private-call-%d", calls)
+			},
+		},
+		{
+			name: "no store cache control",
+			handler: func(c *gin.Context, calls int) {
+				c.Header("Cache-Control", "no-store")
+				c.String(http.StatusOK, "no-store-call-%d", calls)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := gin.New()
+			callCount := 0
+			router.GET("/sensitive", Cache(time.Minute), func(c *gin.Context) {
+				callCount++
+				tt.handler(c, callCount)
+			})
+
+			w1 := httptest.NewRecorder()
+			req1 := httptest.NewRequest(http.MethodGet, "/sensitive", nil)
+			router.ServeHTTP(w1, req1)
+
+			w2 := httptest.NewRecorder()
+			req2 := httptest.NewRequest(http.MethodGet, "/sensitive", nil)
+			router.ServeHTTP(w2, req2)
+
+			assert.Equal(t, "MISS", w1.Header().Get("X-Cache"))
+			assert.Equal(t, "MISS", w2.Header().Get("X-Cache"))
+			assert.Equal(t, 2, callCount)
+		})
+	}
+}
+
+func TestCache_WithSkipFunc(t *testing.T) {
+	router := gin.New()
+	callCount := 0
+
+	router.GET("/skip", Cache(
+		time.Minute,
+		WithCacheSkip(func(c *gin.Context) bool {
+			return c.Query("skip") == "1"
+		}),
+	), func(c *gin.Context) {
+		callCount++
+		c.String(http.StatusOK, "call-%d", callCount)
+	})
+
+	w1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/skip?skip=1", nil)
+	router.ServeHTTP(w1, req1)
+
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/skip?skip=1", nil)
+	router.ServeHTTP(w2, req2)
+
+	assert.Empty(t, w1.Header().Get("X-Cache"))
+	assert.Empty(t, w2.Header().Get("X-Cache"))
+	assert.Equal(t, "call-1", w1.Body.String())
+	assert.Equal(t, "call-2", w2.Body.String())
 }

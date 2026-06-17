@@ -362,7 +362,7 @@ func TestAutoRegister_Cache(t *testing.T) {
 	r1 := e1.Router()
 	r1.AutoRegister(&CacheController{})
 
-	ctrlType := reflect.TypeOf(&CacheController{})
+	ctrlType := reflect.TypeFor[*CacheController]()
 	routes1, ok := routeCache.entries[ctrlType]
 	if !ok || len(routes1) == 0 {
 		t.Fatalf("缓存未写入")

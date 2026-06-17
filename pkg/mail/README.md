@@ -5,7 +5,7 @@
 ## 模块用途
 
 - 封装 SMTP 邮件发送流程。
-- 提供全局默认发送器，便于与 `Engine`、顶层辅助函数集成。
+- 支持按需创建 `Mailer` 实例，并可由 `Engine` 在运行阶段托管。
 - 支持 HTML 模板邮件、附件、批量并发发送、SMTP 连接池复用。
 
 ## 关键类型与函数
@@ -29,11 +29,15 @@
 - `type BatchResult`
   - `Total` / `Succeeded` / `Failed` / `Errors`
 
-### 全局函数
+### 实例与兼容函数
 
-- `InitDefaultMailer(cfg)`：初始化全局默认发送器
-- `DefaultMailer()`：获取全局发送器
+- `NewMailer(cfg)`：创建独立 Mailer 实例（推荐主路径）
 - `RenderTemplate(templateName, data)`：渲染 `mail/templates` 下模板
+
+兼容旧代码的包级全局函数：
+
+- `InitDefaultMailer(cfg)`：初始化包级全局发送器
+- `DefaultMailer()`：获取包级全局发送器
 
 ### 常用选项
 
@@ -135,12 +139,11 @@ _ = err
 
 ## 与 Engine 的集成
 
-- `gin.WithMail(cfg)`：初始化 `Engine` 时注入邮件配置，并自动调用 `mail.InitDefaultMailer`。
-- 顶层辅助函数会直接复用默认发送器：
-  - `gin.SendMail`
-  - `gin.SendMailHTML`
-  - `gin.SendTemplate`
-  - `gin.SendBatch`
+- `gin.WithMail(cfg)`：在构造阶段保存并校验邮件配置。
+- 运行阶段 `Engine` 会自动初始化 engine-scoped `Mailer`。
+- 请求内优先通过 `c.Mailer()` 获取当前引擎绑定的发送器。
+- 应用级代码可通过 `app.Mailer()` 获取当前引擎绑定的发送器。
+- `InitDefaultMailer` / `DefaultMailer()` 仍可用于脱离 `Engine` 的独立脚本或兼容旧代码，但不再是框架集成主路径。
 
 ```go
 e := gin.New(
@@ -151,5 +154,13 @@ e := gin.New(
     }),
 )
 
-_ = gin.SendMail("user@example.com", "标题", "内容")
+e.POST("/mail", func(c *gin.Context) {
+    mailer, err := c.Mailer()
+    if err != nil {
+        c.InternalError(err.Error())
+        return
+    }
+    _ = mailer.SendMail("user@example.com", "标题", "内容")
+    c.Success(gin.H{"ok": true})
+})
 ```

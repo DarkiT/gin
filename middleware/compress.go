@@ -351,8 +351,8 @@ func selectBestEncoding(acceptEncoding string, algorithms []string) string {
 // 返回支持的编码 map（不处理 q 值权重，简化实现）
 func parseAcceptEncoding(header string) map[string]bool {
 	encodings := make(map[string]bool)
-	parts := strings.Split(header, ",")
-	for _, part := range parts {
+	parts := strings.SplitSeq(header, ",")
+	for part := range parts {
 		// 移除空格和 q 值
 		encoding := strings.TrimSpace(part)
 		if idx := strings.Index(encoding, ";"); idx > 0 {

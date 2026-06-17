@@ -24,7 +24,7 @@ func TestCircuitBreaker_Success(t *testing.T) {
 	})
 
 	// 发送成功请求
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.ServeHTTP(w, req)
@@ -50,7 +50,7 @@ func TestCircuitBreaker_FailureThreshold(t *testing.T) {
 	})
 
 	// 发送失败请求直到熔断器打开
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.ServeHTTP(w, req)
@@ -91,7 +91,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 	})
 
 	// 触发失败导致熔断器打开
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.ServeHTTP(w, req)
@@ -109,7 +109,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// 半开状态，发送成功请求
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.ServeHTTP(w, req)

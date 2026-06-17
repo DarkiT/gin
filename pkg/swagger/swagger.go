@@ -2,6 +2,7 @@ package swagger
 
 import (
 	"log"
+	"maps"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -48,24 +49,24 @@ type RouteInfo struct {
 
 // ParamDoc 参数文档
 type ParamDoc struct {
-	Name        string      // 参数名称
-	In          string      // 位置: query, header, path, body
-	Type        string      // 类型: string, integer, boolean, object, array
-	Description string      // 描述
-	Required    bool        // 是否必需
-	ContentType string      // 请求体内容类型，仅 body 生效
-	Example     interface{} // 示例值
+	Name        string // 参数名称
+	In          string // 位置: query, header, path, body
+	Type        string // 类型: string, integer, boolean, object, array
+	Description string // 描述
+	Required    bool   // 是否必需
+	ContentType string // 请求体内容类型，仅 body 生效
+	Example     any    // 示例值
 	Examples    map[string]Example
-	Model       interface{} // 模型（用于 body 参数）
+	Model       any // 模型（用于 body 参数）
 }
 
 // ResponseDoc 响应文档
 type ResponseDoc struct {
-	Description string      // 响应描述
-	ContentType string      // 响应内容类型
-	Example     interface{} // 示例值
+	Description string // 响应描述
+	ContentType string // 响应内容类型
+	Example     any    // 示例值
 	Examples    map[string]Example
-	Model       interface{} // 响应模型
+	Model       any // 响应模型
 }
 
 // NewGenerator 创建 Swagger 文档生成器
@@ -424,9 +425,7 @@ func cloneExamples(examples map[string]Example) map[string]Example {
 	}
 
 	cloned := make(map[string]Example, len(examples))
-	for name, example := range examples {
-		cloned[name] = example
-	}
+	maps.Copy(cloned, examples)
 	return cloned
 }
 
@@ -442,7 +441,7 @@ func defaultResponses(method string) map[int]ResponseDoc {
 }
 
 // buildSchema 构建基础 Schema
-func (g *Generator) buildSchema(typeName string, model interface{}, path string) *Schema {
+func (g *Generator) buildSchema(typeName string, model any, path string) *Schema {
 	if model != nil {
 		return g.buildSchemaFromModel(model, path)
 	}
@@ -476,7 +475,7 @@ func (g *Generator) buildSchema(typeName string, model interface{}, path string)
 }
 
 // buildSchemaFromModel 从模型构建 Schema
-func (g *Generator) buildSchemaFromModel(model interface{}, path string) *Schema {
+func (g *Generator) buildSchemaFromModel(model any, path string) *Schema {
 	if model == nil {
 		return &Schema{Type: "object"}
 	}
@@ -487,7 +486,7 @@ func (g *Generator) buildSchemaFromModel(model interface{}, path string) *Schema
 
 func (g *Generator) buildSchemaFromType(t reflect.Type, visited map[string]bool, path string) *Schema {
 	// 解引用指针
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 

@@ -3,6 +3,7 @@ package swagger
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // swaggerUIHTML Swagger UI HTML 页面模板
@@ -85,17 +86,17 @@ func (h *UIHandler) ServeDoc(w http.ResponseWriter, r *http.Request) {
 
 // replaceString 简单的字符串替换
 func replaceString(s, old, new string) string {
-	result := ""
+	var result strings.Builder
 	for {
 		i := indexOf(s, old)
 		if i < 0 {
-			result += s
+			result.WriteString(s)
 			break
 		}
-		result += s[:i] + new
+		result.WriteString(s[:i] + new)
 		s = s[i+len(old):]
 	}
-	return result
+	return result.String()
 }
 
 // indexOf 查找子字符串位置

@@ -26,8 +26,8 @@ func TestLevelConstants(t *testing.T) {
 func TestLoggerInterfaceSignature(t *testing.T) {
 	var _ Logger = (*testLogger)(nil)
 
-	iface := reflect.TypeOf((*Logger)(nil)).Elem()
-	impl := reflect.TypeOf(&testLogger{})
+	iface := reflect.TypeFor[Logger]()
+	impl := reflect.TypeFor[*testLogger]()
 
 	if !impl.Implements(iface) {
 		t.Fatalf("testLogger should implement Logger")

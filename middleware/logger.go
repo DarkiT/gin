@@ -22,7 +22,8 @@ func Logger() gin.HandlerFunc {
 		method := c.Request.Method
 		clientIP := c.ClientIP()
 
-		logger.Printf("%s %s %d %v %s",
+		logger.Printf(
+			"%s %s %d %v %s",
 			method,
 			path,
 			status,

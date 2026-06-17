@@ -101,7 +101,7 @@ func NewPool(workers int, opts ...PoolOption) *WorkerPool {
 		onTaskDropped:  options.onTaskDropped,
 	}
 
-	for i := 0; i < workers; i++ {
+	for range workers {
 		pool.wg.Add(1)
 		go pool.worker()
 	}

@@ -119,7 +119,7 @@ type cachedRoute struct {
 //  1. 实现 RegexPatternProvider 接口（控制器级）
 //  2. 使用 WithRegexPattern 选项（注册时）
 //  3. 使用默认推断（回退）
-func (r *Router) AutoRegister(ctrl interface{}, opts ...AutoOption) {
+func (r *Router) AutoRegister(ctrl any, opts ...AutoOption) {
 	options := &autoOptions{}
 	for _, opt := range opts {
 		opt(options)
@@ -128,7 +128,7 @@ func (r *Router) AutoRegister(ctrl interface{}, opts ...AutoOption) {
 	ctrlType := reflect.TypeOf(ctrl)
 	ctrlValue := reflect.ValueOf(ctrl)
 
-	if ctrlType.Kind() != reflect.Ptr {
+	if ctrlType.Kind() != reflect.Pointer {
 		panic("AutoRegister: controller must be a pointer")
 	}
 
@@ -184,7 +184,7 @@ func hasRegexRoutes(routes []cachedRoute) bool {
 }
 
 // resolveRegexPath 解析正则路由路径，优先级为选项 > 接口 > 默认推断。
-func resolveRegexPath(ctrl interface{}, methodName, inferredPath string, opts *autoOptions) string {
+func resolveRegexPath(ctrl any, methodName, inferredPath string, opts *autoOptions) string {
 	// 1. 检查注册选项（最高优先级）
 	if opts.regexPatterns != nil {
 		if pattern, ok := opts.regexPatterns[methodName]; ok {
@@ -292,7 +292,7 @@ func scanControllerMethods(ctrlType reflect.Type, ctrlValue reflect.Value) []cac
 }
 
 // getBasePath 计算控制器基础路径。
-func getBasePath(ctrl interface{}, ctrlType reflect.Type, options *autoOptions) string {
+func getBasePath(ctrl any, ctrlType reflect.Type, options *autoOptions) string {
 	// 优先使用选项中的前缀
 	if options.prefix != "" {
 		return options.prefix

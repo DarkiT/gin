@@ -330,6 +330,14 @@ func (m *Mailer) ConfigurePool(opts ...MailOption) {
 	m.pool = NewSMTPPool(m.cfg, options.poolSize, WithPoolMaxIdle(options.poolMaxIdle), WithPoolTimeout(options.poolTimeout))
 }
 
+// SMTPPool 返回当前 Mailer 绑定的 SMTP 连接池。
+func (m *Mailer) SMTPPool() *SMTPPool {
+	if m == nil {
+		return nil
+	}
+	return m.pool
+}
+
 func (m *Mailer) dialer() *gomail.Dialer {
 	d := gomail.NewDialer(m.cfg.Host, m.cfg.Port, m.cfg.Username, m.cfg.Password)
 	if m.cfg.TLS {
@@ -397,10 +405,7 @@ func (m *Mailer) SendBatch(recipients []string, subject, body string, opts ...Ma
 		return result, nil
 	}
 
-	maxWorkers := options.maxConcurrent
-	if maxWorkers > len(recipients) {
-		maxWorkers = len(recipients)
-	}
+	maxWorkers := min(options.maxConcurrent, len(recipients))
 
 	type sendItem struct {
 		to string
@@ -441,7 +446,7 @@ func (m *Mailer) SendBatch(recipients []string, subject, body string, opts ...Ma
 	}
 
 	wg.Add(maxWorkers)
-	for i := 0; i < maxWorkers; i++ {
+	for range maxWorkers {
 		go worker()
 	}
 

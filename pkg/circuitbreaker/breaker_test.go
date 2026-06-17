@@ -56,7 +56,7 @@ func TestCircuitBreaker_OpenCircuit(t *testing.T) {
 	testErr := errors.New("test error")
 
 	// 连续失败 3 次
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := cb.Call(func() error {
 			return testErr
 		})
@@ -85,7 +85,7 @@ func TestCircuitBreaker_HalfOpen(t *testing.T) {
 	testErr := errors.New("test error")
 
 	// 触发熔断
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := cb.Call(func() error {
 			return testErr
 		})
@@ -117,7 +117,7 @@ func TestCircuitBreaker_Recovery(t *testing.T) {
 	testErr := errors.New("test error")
 
 	// 触发熔断
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := cb.Call(func() error {
 			return testErr
 		})
@@ -130,7 +130,7 @@ func TestCircuitBreaker_Recovery(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// 连续成功 2 次
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		err := cb.Call(func() error {
 			return nil
 		})
@@ -151,7 +151,7 @@ func TestCircuitBreaker_HalfOpenToOpen(t *testing.T) {
 	testErr := errors.New("test error")
 
 	// 触发熔断
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := cb.Call(func() error {
 			return testErr
 		})
@@ -183,7 +183,7 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 	testErr := errors.New("test error")
 
 	// 触发熔断
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := cb.Call(func() error {
 			return testErr
 		})
@@ -230,7 +230,7 @@ func TestCircuitBreaker_Concurrent(t *testing.T) {
 	const goroutines = 100
 	done := make(chan bool, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			if err := cb.Call(func() error {
 				time.Sleep(time.Millisecond)
@@ -242,7 +242,7 @@ func TestCircuitBreaker_Concurrent(t *testing.T) {
 		}()
 	}
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		<-done
 	}
 

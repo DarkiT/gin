@@ -90,11 +90,15 @@ func buildCSVRows(data any, options *csvOptions) ([][]string, error) {
 	}
 	value := reflect.ValueOf(data)
 	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil, ErrCSVInvalidData
+		}
 		value = value.Elem()
 	}
 	if value.Kind() == reflect.Struct {
-		value = reflect.MakeSlice(reflect.SliceOf(value.Type()), 1, 1)
-		value.Index(0).Set(reflect.ValueOf(data))
+		list := reflect.MakeSlice(reflect.SliceOf(value.Type()), 1, 1)
+		list.Index(0).Set(value)
+		value = list
 	}
 	if value.Kind() != reflect.Slice && value.Kind() != reflect.Array {
 		return nil, ErrCSVInvalidData

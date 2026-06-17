@@ -61,7 +61,7 @@ func TestRegistryGetChainOrder(t *testing.T) {
 func TestRegistryConcurrentAccess(t *testing.T) {
 	r := NewRegistry()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -69,7 +69,7 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 			r.Register(&Middleware{Name: name, Factory: func() gin.HandlerFunc { return func(c *gin.Context) {} }, Order: i, Enabled: true})
 		}(i)
 	}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

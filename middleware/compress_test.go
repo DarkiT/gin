@@ -405,7 +405,7 @@ func TestCompress_MultipleWrites(t *testing.T) {
 	r.GET("/", func(c *gin.Context) {
 		c.Writer.WriteHeader(http.StatusOK)
 		// 模拟多次写入，确保第一次写入的数据足够长
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			if _, err := c.Writer.Write([]byte(strings.Repeat("line ", 50))); err != nil {
 				t.Fatalf("failed to write response chunk: %v", err)
 			}

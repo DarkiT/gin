@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"maps"
 	"sync"
 
 	"github.com/darkit/gin/binding"
@@ -43,9 +44,7 @@ func ensureValidatorsRegistered() {
 	validatorOnce.Do(func() {
 		validatorMu.Lock()
 		local := make(map[string]ValidatorFunc, len(validators))
-		for tag, fn := range validators {
-			local[tag] = fn
-		}
+		maps.Copy(local, validators)
 		validatorMu.Unlock()
 		for tag, fn := range local {
 			registerValidatorWithEngine(tag, fn)

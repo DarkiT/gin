@@ -121,6 +121,8 @@ r.Use(middleware.OTel("order-api"))
 
 对 `OPTIONS` 请求会直接返回 `204 No Content`。
 
+> **凭证模式安全约束**：当 `AllowCredentials: true` 时，**不再**对通配 `AllowOrigins: ["*"]` 反射任意 `Origin`（W3C 规范禁止 `*` + 凭证，反射任意 Origin 会导致任意站点跨域携带凭证访问）。此时必须显式配置精确的 `AllowOrigins` 白名单（含 scheme/host/port），且 `null` Origin 一律拒绝。非凭证模式下通配 `*` 仍正常工作。
+
 ```go
 r.Use(middleware.CORS())
 
@@ -130,7 +132,7 @@ r.Use(middleware.CORS(middleware.CORSConfig{
     AllowHeaders:     []string{"Content-Type", "Authorization", "X-Request-ID"},
     ExposeHeaders:    []string{"X-Request-ID"},
     MaxAge:           3600,
-    AllowCredentials: true,
+    AllowCredentials: true, // 凭证模式：AllowOrigins 必须为精确白名单，不可用 "*"
 }))
 ```
 
@@ -224,8 +226,9 @@ signature := middleware.GenerateSignature(
 
 实现要点：
 
-- 默认使用内存缓存 `pkg/cache.NewMemoryCache()`
-- 默认 key：`method:path:query` 的 SHA-256 哈希
+- 默认使用无后台清理 goroutine 的内存缓存 `pkg/cache.NewMemory(cache.WithCleanupInterval(0))`
+- 默认 key：`method:path:query` 的 SHA-256 哈希；`WithCacheVary(...)` 会把请求 Header 值纳入 key
+- 默认跳过带 `Authorization` / `Cookie` 的请求，且不缓存 `Set-Cookie`、`private`、`no-cache`、`no-store` 响应
 - 命中时写入 `X-Cache: HIT`
 - 未命中时写入 `X-Cache: MISS`
 - 响应通过 `gob` 序列化存储
@@ -242,15 +245,15 @@ r.GET("/articles/:id",
 自定义缓存存储、Key、响应头：
 
 ```go
-store := cache.NewMemoryCache()
+store := cache.NewMemory()
 
 r.GET("/profile",
     middleware.Cache(30*time.Second,
         middleware.WithCacheStore(store),
         middleware.WithCacheControl("public, max-age=30"),
-        middleware.WithCacheVary("Authorization"),
-        middleware.WithCacheKey(func(c *gin.Context) string {
-            return "profile:" + c.GetHeader("Authorization")
+        middleware.WithCacheVary("Accept-Language"),
+        middleware.WithCacheSkip(func(c *gin.Context) bool {
+            return c.GetHeader("Authorization") != ""
         }),
     ),
     handler,
@@ -312,14 +315,17 @@ r.Use(middleware.Timeout(2 * time.Second))
 
 #### Idempotent
 
-`Idempotent(opts ...IdempotentOption)` 用请求头 `Idempotency-Key` 作为默认幂等键，缓存首次响应，后续相同 key 直接重放缓存结果。
+`Idempotent(opts ...IdempotentOption)` 读取请求头 `Idempotency-Key`，并默认组合 `method + request path + Idempotency-Key` 生成实际存储 key，缓存首次响应，后续同一操作 key 直接重放缓存结果。
 
 默认行为：
 
 - 默认 TTL：`5m`
 - 默认存储：`MemoryIdempotentStore`
-- 默认 key 来源：`Idempotency-Key`
-- 若命中缓存：直接返回此前的状态码与响应体
+- 默认 key 维度：`method + request path + Idempotency-Key + namespace`，避免同 key 跨路由或跨方法 replay
+- 默认 namespace：取 context 中的 `user_id`（鉴权主体），避免他人凭 `Idempotency-Key` 命中你的缓存（横向越权）；无鉴权主体时为空，行为与旧版一致
+- 若命中已完成缓存：直接返回此前的状态码与响应体
+- **并发同 key 防护**：首个请求原子占位执行，处理期间的并发同 key 请求返回 `409 Conflict`（`idempotent request already in progress`），避免重复扣款/创建
+- **失败自动释放**：handler panic / abort / 非成功完成时，占位会被释放，后续相同 key 可重试（不会被 TTL 内锁死）
 
 ```go
 r.POST("/payments",
@@ -330,7 +336,7 @@ r.POST("/payments",
 )
 ```
 
-自定义 TTL / Store / Key / Skip 逻辑：
+自定义 TTL / Store / Key / Namespace / Skip 逻辑（namespace 建议返回鉴权主体以隔离重放边界）：
 
 ```go
 r.POST("/orders",
@@ -338,6 +344,9 @@ r.POST("/orders",
         middleware.WithIdempotentTTL(10*time.Minute),
         middleware.WithIdempotentKeyFunc(func(c *gin.Context) string {
             return c.GetHeader("X-Order-Key")
+        }),
+        middleware.WithIdempotentNamespaceFunc(func(c *gin.Context) string {
+            return c.GetString("user_id") // 按租户/主体隔离
         }),
         middleware.WithIdempotentSkipFunc(func(c *gin.Context) bool {
             return c.Query("dry_run") == "true"
@@ -456,7 +465,8 @@ r.Use(chimw.Recoverer)
 | 中间件 | 说明 |
 | --- | --- |
 | `Throttle` / `ThrottleBacklog` | 并发请求节流与积压队列 |
-| `RealIP` | 解析 `X-Forwarded-For` / `X-Real-IP` |
+| `RealIP` | 解析 `X-Forwarded-For` / `X-Real-IP`（遵循 `SetTrustedProxies` 配置） |
+| `RealIPStrict` | 取 TCP 连接源地址，不信任任何代理头 |
 | `NoCache` | 禁用缓存响应头 |
 | `URLFormat` | 解析 `.json` / `.xml` 等 URL 扩展 |
 | `Sunset` | RFC 8594 API 废弃通知 |
@@ -487,8 +497,24 @@ r.Use(middleware.ThrottleBacklog(100, 50, 30*time.Second))
 
 ### RealIP
 
+`RealIP()` 解析客户端真实 IP 并存入 context，底层遵循 Gin 的 `SetTrustedProxies` / `RemoteIPHeaders` 配置。
+
+> **⚠️ 安全提示**：Gin 默认信任全部代理（`trustedProxies=["0.0.0.0/0","::/0"]`），会解析客户端可伪造的 `X-Forwarded-For` / `X-Real-IP`。攻击者每请求换一个伪造 IP 即可绕过基于 IP 的限流/审计。生产环境部署在反代之后时，**必须**显式调用 `engine.SetTrustedProxies(真实反代 CIDR)` 收紧可信代理；若为直连部署或不希望本层解析代理头，请改用 `RealIPStrict()`。
+
 ```go
 r.Use(middleware.RealIP())
+
+r.GET("/whoami", func(c *gin.Context) {
+    c.JSON(200, gin.H{"ip": middleware.GetRealIP(c)})
+})
+```
+
+### RealIPStrict
+
+`RealIPStrict()` 直接取 TCP 连接源地址（`Request.RemoteAddr`），不信任任何代理头，可彻底避免伪造 `X-Forwarded-For` 绕过限流/审计。适用于直连部署或外层反代已处理 IP 的场景。
+
+```go
+r.Use(middleware.RealIPStrict())
 
 r.GET("/whoami", func(c *gin.Context) {
     c.JSON(200, gin.H{"ip": middleware.GetRealIP(c)})

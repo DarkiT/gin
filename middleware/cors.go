@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -37,11 +38,21 @@ func CORS(config ...CORSConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
 
-		if len(cfg.AllowOrigins) > 0 {
-			if cfg.AllowOrigins[0] == "*" {
+		// Origin 处理（安全收紧）：
+		//  - 通配 "*" 仅在 **非凭证** 模式下回写；凭证模式下反射任意 Origin 等于任意站点跨域带凭证
+		//    访问（CSRF / 数据外泄），故凭证 + 通配时不回写 ACAO（拒绝跨域），用户应配置显式 allowlist。
+		//  - 显式 allowlist 走精确匹配，并拒绝 "null" Origin（防 null origin 反射攻击）。
+		//  - 拒绝空 Origin（同源请求不携带 Origin 头，无需 CORS 头）。
+		if len(cfg.AllowOrigins) > 0 && origin != "" && origin != "null" {
+			wildcard := len(cfg.AllowOrigins) == 1 && cfg.AllowOrigins[0] == "*"
+			switch {
+			case wildcard && !cfg.AllowCredentials:
 				c.Header("Access-Control-Allow-Origin", "*")
-			} else if contains(cfg.AllowOrigins, origin) {
+			case wildcard && cfg.AllowCredentials:
+				// 规范禁止 "*" + credentials，且反射任意 origin 是高危——保持不回写 ACAO。
+			case contains(cfg.AllowOrigins, origin):
 				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Vary", "Origin")
 			}
 		}
 
@@ -71,10 +82,5 @@ func CORS(config ...CORSConfig) gin.HandlerFunc {
 }
 
 func contains(s []string, e string) bool {
-	for _, a := range s {
-		if a == e {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, e)
 }

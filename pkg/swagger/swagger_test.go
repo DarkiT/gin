@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -408,13 +409,7 @@ func TestSwagger_StructSchema(t *testing.T) {
 	}
 
 	// 验证必需字段
-	hasRequired := false
-	for _, req := range schema.Required {
-		if req == "name" {
-			hasRequired = true
-			break
-		}
-	}
+	hasRequired := slices.Contains(schema.Required, "name")
 	if !hasRequired {
 		t.Error("Expected 'name' to be required")
 	}
@@ -477,7 +472,7 @@ func BenchmarkGenerate(b *testing.B) {
 	gen := NewGenerator(cfg)
 
 	// 添加多个路由
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		gen.AddRoute(&RouteInfo{
 			Path:    "/test",
 			Method:  "GET",

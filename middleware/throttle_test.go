@@ -43,11 +43,8 @@ func TestThrottle(t *testing.T) {
 	successCount := atomic.Int32{}
 	rejectedCount := atomic.Int32{}
 
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+	for range 100 {
+		wg.Go(func() {
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest("GET", "/test", nil)
 			router.ServeHTTP(w, req)
@@ -58,7 +55,7 @@ func TestThrottle(t *testing.T) {
 			case 429:
 				rejectedCount.Add(1)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -104,17 +101,14 @@ func TestThrottleBacklog(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make(chan int, 50)
 
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+	for range 50 {
+		wg.Go(func() {
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest("GET", "/test", nil)
 			router.ServeHTTP(w, req)
 
 			results <- w.Code
-		}()
+		})
 		time.Sleep(time.Millisecond) // 稍微错开请求时间
 	}
 
@@ -309,7 +303,7 @@ func TestThrottle_Sequential(t *testing.T) {
 	})
 
 	// 顺序发送请求（不并发）
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/test", nil)
 		router.ServeHTTP(w, req)

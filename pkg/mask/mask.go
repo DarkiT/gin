@@ -2,6 +2,7 @@
 package mask
 
 import (
+	"maps"
 	"reflect"
 	"sync"
 )
@@ -102,13 +103,9 @@ func buildOptions(opts ...MaskOption) *maskOptions {
 	}
 	rulesMu.RLock()
 	localRules := make(map[string]MaskFunc, len(defaultRules))
-	for k, v := range defaultRules {
-		localRules[k] = v
-	}
+	maps.Copy(localRules, defaultRules)
 	localOverrides := make(map[string]bool, len(userOverrides))
-	for k, v := range userOverrides {
-		localOverrides[k] = v
-	}
+	maps.Copy(localOverrides, userOverrides)
 	rulesMu.RUnlock()
 	if options.maskChar != defaultOption.maskChar {
 		for tag, fn := range buildBuiltinRules(options.maskChar) {
@@ -119,9 +116,7 @@ func buildOptions(opts ...MaskOption) *maskOptions {
 		}
 	}
 	if len(options.custom) > 0 {
-		for tag, fn := range options.custom {
-			localRules[tag] = fn
-		}
+		maps.Copy(localRules, options.custom)
 	}
 	options.rules = localRules
 	return options
@@ -222,7 +217,7 @@ func getFieldMaskInfo(t reflect.Type) []fieldMaskInfo {
 func parseType(t reflect.Type) []fieldMaskInfo {
 	fieldCount := t.NumField()
 	infos := make([]fieldMaskInfo, 0, fieldCount)
-	for i := 0; i < fieldCount; i++ {
+	for i := range fieldCount {
 		fieldType := t.Field(i)
 		if fieldType.PkgPath != "" {
 			continue

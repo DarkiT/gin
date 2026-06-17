@@ -55,7 +55,7 @@ func ValidateUSCC(code string) bool {
 	if len(code) != 18 {
 		return false
 	}
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		if usccCharIndex(code[i]) < 0 {
 			return false
 		}
@@ -68,7 +68,7 @@ func ValidateUSCC(code string) bool {
 }
 
 func validateIDCard15(id string) bool {
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		if id[i] < '0' || id[i] > '9' {
 			return false
 		}
@@ -77,7 +77,7 @@ func validateIDCard15(id string) bool {
 }
 
 func validateIDCard18(id string) bool {
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		if id[i] < '0' || id[i] > '9' {
 			return false
 		}
@@ -94,7 +94,7 @@ func calculateIDCardChecksum(id string) string {
 		return ""
 	}
 	sum := 0
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		ch := id[i]
 		if ch < '0' || ch > '9' {
 			return ""
@@ -106,7 +106,7 @@ func calculateIDCardChecksum(id string) string {
 
 func calculateUSCCChecksum(code17 string) byte {
 	sum := 0
-	for i := 0; i < 17; i++ {
+	for i := range 17 {
 		idx := usccCharIndex(code17[i])
 		if idx < 0 {
 			return 0

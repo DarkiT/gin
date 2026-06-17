@@ -27,7 +27,7 @@ func TestWorkerPool_Submit(t *testing.T) {
 	const tasks = 10
 	wg.Add(tasks)
 
-	for i := 0; i < tasks; i++ {
+	for range tasks {
 		pool.Submit(func() {
 			atomic.AddInt32(&counter, 1)
 			wg.Done()
@@ -49,7 +49,7 @@ func TestWorkerPool_Shutdown(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(5)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		pool.Submit(func() {
 			atomic.AddInt32(&counter, 1)
 			wg.Done()
@@ -83,9 +83,9 @@ func TestWorkerPool_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines * tasksPerGoroutine)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
-			for j := 0; j < tasksPerGoroutine; j++ {
+			for range tasksPerGoroutine {
 				pool.Submit(func() {
 					atomic.AddInt32(&counter, 1)
 					wg.Done()
@@ -110,7 +110,7 @@ func TestWorkerPool_ShutdownWait(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		pool.Submit(func() {
 			time.Sleep(50 * time.Millisecond)
 			atomic.AddInt32(&completed, 1)

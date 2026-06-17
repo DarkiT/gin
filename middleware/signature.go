@@ -25,6 +25,10 @@ type NonceStore interface {
 
 	// Set 设置 nonce，并指定过期时间
 	Set(nonce string, expiry time.Duration) error
+
+	// Reserve 原子地首次占用 nonce：仅当 nonce 不存在（或已过期）时写入并返回 true；
+	// 已存在则返回 false。用于收紧「先 Exists 再 Set」的 TOCTOU 防重放竞态。
+	Reserve(nonce string, expiry time.Duration) bool
 }
 
 // MemoryNonceStore 内存存储实现（用于开发/测试）
@@ -74,6 +78,18 @@ func (s *MemoryNonceStore) Set(nonce string, expiry time.Duration) error {
 
 	s.store[nonce] = time.Now().Add(expiry)
 	return nil
+}
+
+// Reserve 原子地首次占用 nonce（写锁内完成"不存在则写入"，避免 TOCTOU 重放）。
+func (s *MemoryNonceStore) Reserve(nonce string, expiry time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if exp, exists := s.store[nonce]; exists && !time.Now().After(exp) {
+		return false // 已存在且未过期 → 重放，拒绝
+	}
+	s.store[nonce] = time.Now().Add(expiry)
+	return true
 }
 
 // cleanupExpired 定期清理过期的 nonce
@@ -224,15 +240,7 @@ func SignatureVerify(opts ...SignatureOption) gin.HandlerFunc {
 			return
 		}
 
-		// 5. 检查 nonce 是否已使用（防重放攻击）
-		if options.nonceStore.Exists(nonce) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "nonce already used (replay attack detected)",
-			})
-			return
-		}
-
-		// 6. 读取请求体
+		// 5. 读取请求体
 		limitedReader := &io.LimitedReader{R: c.Request.Body, N: options.maxBodySize + 1}
 		body, err := io.ReadAll(limitedReader)
 		if err != nil {
@@ -248,16 +256,16 @@ func SignatureVerify(opts ...SignatureOption) gin.HandlerFunc {
 			return
 		}
 
-		// 7. 恢复请求体（以便后续处理）
+		// 6. 恢复请求体（以便后续处理）
 		c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
 
-		// 8. 构建签名字符串
+		// 7. 构建签名字符串
 		signString := buildSignString(c, timestamp, nonce, string(body), options.headers)
 
-		// 9. 计算期望的签名
+		// 8. 计算期望的签名
 		expectedSignature := computeSignature(signString, options.secret, options.algorithm)
 
-		// 10. 验证签名
+		// 9. 验证签名（恒定时间比较）
 		if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid signature",
@@ -265,15 +273,16 @@ func SignatureVerify(opts ...SignatureOption) gin.HandlerFunc {
 			return
 		}
 
-		// 11. 存储 nonce（防止重放攻击）
-		if err := options.nonceStore.Set(nonce, time.Duration(options.expiry)*time.Second); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "failed to store nonce",
+		// 10. 验签通过后，原子首次占用 nonce 防重放（收紧原先 Exists+Set 的 TOCTOU 窗口）。
+		//     签名错误时不会走到这里，因此合法请求误签不会白白消费 nonce。
+		if !options.nonceStore.Reserve(nonce, time.Duration(options.expiry)*time.Second) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "nonce already used (replay attack detected)",
 			})
 			return
 		}
 
-		// 12. 验证通过，继续处理
+		// 11. 验证通过，继续处理
 		c.Next()
 	}
 }

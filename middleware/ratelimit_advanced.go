@@ -96,8 +96,9 @@ func rateLimitByKey(keyFunc func(*gin.Context) string, limit string, opts ...Rat
 	return func(c *gin.Context) {
 		key := rateLimitIdentity(c, keyFunc)
 		if key == "" {
-			c.Next()
-			return
+			// 鉴权主体未建立（keyFunc 返回空）时，回退到 IP 维度限流；
+			// 禁止静默放行——否则未鉴权请求将完全绕过限流（限流旁路）。
+			key = c.ClientIP()
 		}
 		key = "key:" + key
 		if !options.allowWithBurst(key, ratePerSecond, burst) {
@@ -149,15 +150,13 @@ func handleRateLimitBlocked(c *gin.Context, options *rateLimitOptions) {
 	c.AbortWithStatus(http.StatusTooManyRequests)
 }
 
+// defaultUserKeyFunc 仅信任鉴权中间件写入 context 的 user_id。
+//
+// 禁止回退读取客户端可控的 X-User-ID 头：该头完全由请求方伪造，一旦信任，攻击者只需
+// 每个请求换一个 X-User-ID 即可每个"用户"各拿一份限流配额，彻底击穿按用户限流。
+// 鉴权主体未建立时返回空串，由调用方回退到 IP 维度。
 func defaultUserKeyFunc(c *gin.Context) string {
-	value := c.GetString("user_id")
-	if value != "" {
-		return value
-	}
-	if header := c.GetHeader("X-User-ID"); header != "" {
-		return header
-	}
-	return ""
+	return c.GetString("user_id")
 }
 
 func defaultTierFunc(c *gin.Context) string {
@@ -215,10 +214,7 @@ func parseRateLimit(limit string, defaultBurst int) (float64, int, error) {
 	ratePerSecond := count / window.Seconds()
 	burst := defaultBurst
 	if burst <= 0 {
-		burst = int(count)
-		if burst < 1 {
-			burst = 1
-		}
+		burst = max(int(count), 1)
 	}
 
 	return ratePerSecond, burst, nil

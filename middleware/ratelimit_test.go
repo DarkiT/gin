@@ -43,7 +43,7 @@ func TestRateLimitAllowsWithinBurst(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.ServeHTTP(w, req)

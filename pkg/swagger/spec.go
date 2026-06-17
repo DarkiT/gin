@@ -16,7 +16,7 @@ type Info struct {
 	Title       string  `json:"title"`                 // API 标题
 	Description string  `json:"description,omitempty"` // API 描述
 	Version     string  `json:"version"`               // API 版本
-	Contact     Contact `json:"contact,omitempty"`     // 联系信息
+	Contact     Contact `json:"contact"`               // 联系信息
 }
 
 // Contact 联系信息
@@ -77,15 +77,15 @@ type RequestBody struct {
 // MediaType 媒体类型定义
 type MediaType struct {
 	Schema   *Schema            `json:"schema,omitempty"`   // 数据模式
-	Example  interface{}        `json:"example,omitempty"`  // 示例值
+	Example  any                `json:"example,omitempty"`  // 示例值
 	Examples map[string]Example `json:"examples,omitempty"` // 多个示例
 }
 
 // Example 示例定义
 type Example struct {
-	Summary     string      `json:"summary,omitempty"`     // 示例摘要
-	Description string      `json:"description,omitempty"` // 示例描述
-	Value       interface{} `json:"value,omitempty"`       // 示例值
+	Summary     string `json:"summary,omitempty"`     // 示例摘要
+	Description string `json:"description,omitempty"` // 示例描述
+	Value       any    `json:"value,omitempty"`       // 示例值
 }
 
 // Response 响应定义
@@ -109,9 +109,9 @@ type Schema struct {
 	Required    []string           `json:"required,omitempty"`    // 必需字段列表
 	Properties  map[string]*Schema `json:"properties,omitempty"`  // 对象属性
 	Items       *Schema            `json:"items,omitempty"`       // 数组项模式
-	Example     interface{}        `json:"example,omitempty"`     // 示例值
-	Enum        []interface{}      `json:"enum,omitempty"`        // 枚举值
-	Default     interface{}        `json:"default,omitempty"`     // 默认值
+	Example     any                `json:"example,omitempty"`     // 示例值
+	Enum        []any              `json:"enum,omitempty"`        // 枚举值
+	Default     any                `json:"default,omitempty"`     // 默认值
 	Minimum     *float64           `json:"minimum,omitempty"`     // 最小值
 	Maximum     *float64           `json:"maximum,omitempty"`     // 最大值
 	MinLength   *int               `json:"minLength,omitempty"`   // 最小长度

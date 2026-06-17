@@ -1,159 +1,400 @@
 package cache
 
 import (
+	"container/list"
 	"context"
+	"errors"
+	"strconv"
 	"sync"
 	"time"
 )
 
-type cacheItem struct {
-	value      []byte
-	expiration time.Time
-	createdAt  time.Time
+type memoryEntry struct {
+	key       string
+	value     []byte
+	expiresAt time.Time
+	element   *list.Element
 }
 
-type memoryCache struct {
+type loadCall struct {
+	wg    sync.WaitGroup
+	value []byte
+	err   error
+}
+
+// Memory 是并发安全的本地内存缓存。
+//
+// 它使用 LRU 淘汰策略，支持 TTL、批量操作、统计信息与后台过期清理。
+type Memory struct {
 	mu              sync.RWMutex
-	items           map[string]*cacheItem
-	maxSize         int
-	defaultTTL      time.Duration
+	items           map[string]*memoryEntry
+	lru             *list.List
+	maxEntries      int
 	cleanupInterval time.Duration
-	cleanupTimer    *time.Ticker
+	cloneValues     bool
+	cleanupTicker   *time.Ticker
 	stopCleanup     chan struct{}
 	stopOnce        sync.Once
+	closed          bool
+	stats           Stats
+	loads           map[string]*loadCall
 }
 
-type MemoryOption func(*memoryCache)
+// MemoryOption 配置 Memory 缓存。
+type MemoryOption func(*Memory)
 
-func WithMaxSize(size int) MemoryOption {
-	return func(c *memoryCache) { c.maxSize = size }
+// WithMaxEntries 设置最大缓存项数量，<= 0 表示不限制。
+func WithMaxEntries(size int) MemoryOption {
+	return func(c *Memory) { c.maxEntries = size }
 }
 
-func WithDefaultTTL(ttl time.Duration) MemoryOption {
-	return func(c *memoryCache) { c.defaultTTL = ttl }
-}
-
+// WithCleanupInterval 设置后台过期清理周期，<= 0 表示关闭后台清理。
 func WithCleanupInterval(d time.Duration) MemoryOption {
-	return func(c *memoryCache) { c.cleanupInterval = d }
+	return func(c *Memory) { c.cleanupInterval = d }
 }
 
-func NewMemoryCache(opts ...MemoryOption) Cache {
-	c := &memoryCache{
-		items:           make(map[string]*cacheItem),
-		maxSize:         1000,
-		defaultTTL:      5 * time.Minute,
+// WithCloneValues 设置读写时是否复制 []byte，默认开启以避免调用方修改缓存内部状态。
+func WithCloneValues(enabled bool) MemoryOption {
+	return func(c *Memory) { c.cloneValues = enabled }
+}
+
+// NewMemory 创建本地内存缓存。
+func NewMemory(opts ...MemoryOption) *Memory {
+	c := &Memory{
+		items:           make(map[string]*memoryEntry),
+		lru:             list.New(),
+		maxEntries:      1000,
 		cleanupInterval: time.Minute,
+		cloneValues:     true,
 		stopCleanup:     make(chan struct{}),
+		loads:           make(map[string]*loadCall),
 	}
 	for _, opt := range opts {
-		opt(c)
+		if opt != nil {
+			opt(c)
+		}
 	}
 	if c.cleanupInterval > 0 {
-		c.cleanupTimer = time.NewTicker(c.cleanupInterval)
+		c.cleanupTicker = time.NewTicker(c.cleanupInterval)
 		go c.cleanupLoop()
 	}
 	return c
 }
 
-func (c *memoryCache) Get(ctx context.Context, key string) ([]byte, error) {
-	_ = ctx
-	c.mu.RLock()
-	item, ok := c.items[key]
-	if !ok {
-		c.mu.RUnlock()
-		return nil, ErrNotFound
-	}
-	if c.isExpiredLocked(item) {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		c.deleteIfExpiredLocked(key)
-		c.mu.Unlock()
-		return nil, ErrExpired
-	}
-	value := make([]byte, len(item.value))
-	copy(value, item.value)
-	c.mu.RUnlock()
-	return value, nil
-}
-
-func (c *memoryCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+// Get 获取缓存值。
+func (c *Memory) Get(ctx context.Context, key string) ([]byte, error) {
 	_ = ctx
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	exp := time.Time{}
-	if ttl <= 0 {
-		ttl = c.defaultTTL
+	if c.closed {
+		return nil, ErrClosed
 	}
+	entry, ok := c.items[key]
+	if !ok {
+		c.stats.Misses++
+		return nil, ErrNotFound
+	}
+	if c.isExpired(entry) {
+		c.removeEntry(entry)
+		c.stats.Misses++
+		c.stats.Expirations++
+		return nil, ErrExpired
+	}
+	c.lru.MoveToFront(entry.element)
+	c.stats.Hits++
+	return c.clone(entry.value), nil
+}
+
+// Set 设置缓存值，ttl <= 0 表示不过期。
+func (c *Memory) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	_ = ctx
+	if key == "" {
+		return ErrInvalidKey
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return ErrClosed
+	}
+	expiresAt := time.Time{}
 	if ttl > 0 {
-		exp = time.Now().Add(ttl)
+		expiresAt = time.Now().Add(ttl)
 	}
-	if existing, ok := c.items[key]; ok {
-		existing.value = cloneBytes(value)
-		existing.expiration = exp
-		existing.createdAt = time.Now()
+	val := c.clone(value)
+	if entry, ok := c.items[key]; ok {
+		c.stats.Size += int64(len(val) - len(entry.value))
+		entry.value = val
+		entry.expiresAt = expiresAt
+		c.lru.MoveToFront(entry.element)
+		c.stats.Sets++
 		return nil
 	}
-	if c.maxSize > 0 && len(c.items) >= c.maxSize {
-		c.evictOldestLocked()
-	}
-	c.items[key] = &cacheItem{
-		value:      cloneBytes(value),
-		expiration: exp,
-		createdAt:  time.Now(),
-	}
+
+	entry := &memoryEntry{key: key, value: val, expiresAt: expiresAt}
+	entry.element = c.lru.PushFront(entry)
+	c.items[key] = entry
+	c.stats.Keys = int64(len(c.items))
+	c.stats.Size += int64(len(val))
+	c.stats.Sets++
+	c.evictIfNeeded()
 	return nil
 }
 
-func (c *memoryCache) Delete(ctx context.Context, key string) error {
+// Delete 删除缓存；key 不存在时返回 nil。
+func (c *Memory) Delete(ctx context.Context, key string) error {
 	_ = ctx
 	c.mu.Lock()
-	delete(c.items, key)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return ErrClosed
+	}
+	if entry, ok := c.items[key]; ok {
+		c.removeEntry(entry)
+	}
+	c.stats.Deletes++
 	return nil
 }
 
-func (c *memoryCache) Exists(ctx context.Context, key string) (bool, error) {
+// Exists 检查缓存是否存在。
+func (c *Memory) Exists(ctx context.Context, key string) (bool, error) {
 	_ = ctx
-	c.mu.RLock()
-	item, ok := c.items[key]
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return false, ErrClosed
+	}
+	entry, ok := c.items[key]
 	if !ok {
-		c.mu.RUnlock()
 		return false, nil
 	}
-	if c.isExpiredLocked(item) {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		c.deleteIfExpiredLocked(key)
-		c.mu.Unlock()
-		return false, ErrExpired
+	if c.isExpired(entry) {
+		c.removeEntry(entry)
+		c.stats.Expirations++
+		return false, nil
 	}
-	c.mu.RUnlock()
 	return true, nil
 }
 
-func (c *memoryCache) Clear(ctx context.Context) error {
+// Clear 清空所有缓存。
+func (c *Memory) Clear(ctx context.Context) error {
 	_ = ctx
 	c.mu.Lock()
-	c.items = make(map[string]*cacheItem)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return ErrClosed
+	}
+	c.items = make(map[string]*memoryEntry)
+	c.lru.Init()
+	c.stats.Keys = 0
+	c.stats.Size = 0
 	return nil
 }
 
-func (c *memoryCache) Close() error {
+// Close 关闭缓存后台资源。
+func (c *Memory) Close() error {
 	c.stopOnce.Do(func() {
-		if c.cleanupTimer != nil {
-			c.cleanupTimer.Stop()
+		c.mu.Lock()
+		c.closed = true
+		if c.cleanupTicker != nil {
+			c.cleanupTicker.Stop()
 		}
 		close(c.stopCleanup)
+		c.mu.Unlock()
 	})
 	return nil
 }
 
-func (c *memoryCache) cleanupLoop() {
+// Len 返回当前缓存项数量。
+func (c *Memory) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.items)
+}
+
+// MGet 批量获取缓存值。
+func (c *Memory) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	result := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		val, err := c.Get(ctx, key)
+		if err == nil {
+			result[key] = val
+			continue
+		}
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrExpired) {
+			continue
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+// MSet 批量设置缓存值。
+func (c *Memory) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	for key, value := range items {
+		if err := c.Set(ctx, key, value, ttl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MDelete 批量删除缓存。
+func (c *Memory) MDelete(ctx context.Context, keys []string) error {
+	for _, key := range keys {
+		if err := c.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetOrSet 获取缓存值，不存在时调用 fn 生成并设置。
+func (c *Memory) GetOrSet(ctx context.Context, key string, fn func() ([]byte, error), ttl time.Duration) ([]byte, error) {
+	if val, err := c.Get(ctx, key); err == nil {
+		return val, nil
+	} else if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrExpired) {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, ErrClosed
+	}
+	if entry, ok := c.items[key]; ok {
+		if c.isExpired(entry) {
+			c.removeEntry(entry)
+			c.stats.Expirations++
+		} else {
+			c.lru.MoveToFront(entry.element)
+			value := c.clone(entry.value)
+			c.mu.Unlock()
+			return value, nil
+		}
+	}
+	if call, ok := c.loads[key]; ok {
+		c.mu.Unlock()
+		call.wg.Wait()
+		if call.err != nil {
+			return nil, call.err
+		}
+		return c.clone(call.value), nil
+	}
+	call := &loadCall{}
+	call.wg.Add(1)
+	c.loads[key] = call
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		delete(c.loads, key)
+		c.mu.Unlock()
+		call.wg.Done()
+	}()
+
+	value, err := fn()
+	if err != nil {
+		call.err = err
+		return nil, err
+	}
+	if err := c.Set(ctx, key, value, ttl); err != nil {
+		call.err = err
+		return nil, err
+	}
+	call.value = c.clone(value)
+	return c.clone(value), nil
+}
+
+// Increment 原子递增整数值。
+func (c *Memory) Increment(ctx context.Context, key string, delta int64) (int64, error) {
+	return c.add(ctx, key, delta)
+}
+
+// Decrement 原子递减整数值。
+func (c *Memory) Decrement(ctx context.Context, key string, delta int64) (int64, error) {
+	return c.add(ctx, key, -delta)
+}
+
+// Stats 返回缓存统计信息。
+func (c *Memory) Stats() Stats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	stats := c.stats
+	stats.Keys = int64(len(c.items))
+	if total := stats.Hits + stats.Misses; total > 0 {
+		stats.HitRate = float64(stats.Hits) / float64(total)
+	}
+	return stats
+}
+
+// ResetStats 重置缓存统计信息。
+func (c *Memory) ResetStats() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := int64(len(c.items))
+	size := c.stats.Size
+	c.stats = Stats{Keys: keys, Size: size}
+}
+
+func (c *Memory) add(ctx context.Context, key string, delta int64) (int64, error) {
+	_ = ctx
+	if key == "" {
+		return 0, ErrInvalidKey
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return 0, ErrClosed
+	}
+	current := int64(0)
+	expiresAt := time.Time{}
+	if entry, ok := c.items[key]; ok {
+		if c.isExpired(entry) {
+			c.removeEntry(entry)
+			c.stats.Expirations++
+		} else {
+			var err error
+			current, err = strconv.ParseInt(string(entry.value), 10, 64)
+			if err != nil {
+				return 0, err
+			}
+			expiresAt = entry.expiresAt
+		}
+	}
+
+	next := current + delta
+	val := []byte(strconv.FormatInt(next, 10))
+	if entry, ok := c.items[key]; ok {
+		c.stats.Size += int64(len(val) - len(entry.value))
+		entry.value = c.clone(val)
+		entry.expiresAt = expiresAt
+		c.lru.MoveToFront(entry.element)
+		c.stats.Sets++
+		return next, nil
+	}
+
+	entry := &memoryEntry{key: key, value: c.clone(val), expiresAt: expiresAt}
+	entry.element = c.lru.PushFront(entry)
+	c.items[key] = entry
+	c.stats.Keys = int64(len(c.items))
+	c.stats.Size += int64(len(entry.value))
+	c.stats.Sets++
+	c.evictIfNeeded()
+	return next, nil
+}
+
+func (c *Memory) cleanupLoop() {
 	for {
 		select {
-		case <-c.cleanupTimer.C:
+		case <-c.cleanupTicker.C:
 			c.cleanupExpired()
 		case <-c.stopCleanup:
 			return
@@ -161,124 +402,69 @@ func (c *memoryCache) cleanupLoop() {
 	}
 }
 
-func (c *memoryCache) cleanupExpired() {
+func (c *Memory) cleanupExpired() {
 	c.mu.Lock()
-	for key, item := range c.items {
-		if c.isExpiredLocked(item) {
-			delete(c.items, key)
+	defer c.mu.Unlock()
+	for _, entry := range append([]*memoryEntry(nil), c.itemsSlice()...) {
+		if c.isExpired(entry) {
+			c.removeEntry(entry)
+			c.stats.Expirations++
 		}
 	}
-	c.mu.Unlock()
 }
 
-func (c *memoryCache) isExpiredLocked(item *cacheItem) bool {
-	if item.expiration.IsZero() {
-		return false
+func (c *Memory) itemsSlice() []*memoryEntry {
+	entries := make([]*memoryEntry, 0, len(c.items))
+	for _, entry := range c.items {
+		entries = append(entries, entry)
 	}
-	return time.Now().After(item.expiration)
+	return entries
 }
 
-func (c *memoryCache) deleteIfExpiredLocked(key string) {
-	item, ok := c.items[key]
-	if !ok {
+func (c *Memory) evictIfNeeded() {
+	if c.maxEntries <= 0 {
 		return
 	}
-	if c.isExpiredLocked(item) {
-		delete(c.items, key)
-	}
-}
-
-func (c *memoryCache) evictOldestLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for key, item := range c.items {
-		if first || item.createdAt.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = item.createdAt
-			first = false
+	for len(c.items) > c.maxEntries {
+		oldest := c.lru.Back()
+		if oldest == nil {
+			return
 		}
-	}
-	if !first {
-		delete(c.items, oldestKey)
+		entry := oldest.Value.(*memoryEntry)
+		c.removeEntry(entry)
+		c.stats.Evictions++
 	}
 }
 
-func cloneBytes(value []byte) []byte {
-	if value == nil {
-		return nil
+func (c *Memory) removeEntry(entry *memoryEntry) {
+	delete(c.items, entry.key)
+	if entry.element != nil {
+		c.lru.Remove(entry.element)
+	}
+	c.stats.Keys = int64(len(c.items))
+	c.stats.Size -= int64(len(entry.value))
+	if c.stats.Size < 0 {
+		c.stats.Size = 0
+	}
+}
+
+func (c *Memory) isExpired(entry *memoryEntry) bool {
+	return !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt)
+}
+
+func (c *Memory) clone(value []byte) []byte {
+	if value == nil || !c.cloneValues {
+		return value
 	}
 	buf := make([]byte, len(value))
 	copy(buf, value)
 	return buf
 }
 
-// ============================================================
-// BatchCache 接口实现
-// ============================================================
-
-// MGet 批量获取缓存值。
-func (c *memoryCache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
-	_ = ctx
-	result := make(map[string][]byte, len(keys))
-
-	c.mu.RLock()
-	for _, key := range keys {
-		item, ok := c.items[key]
-		if !ok {
-			continue
-		}
-		if c.isExpiredLocked(item) {
-			continue
-		}
-		result[key] = cloneBytes(item.value)
-	}
-	c.mu.RUnlock()
-
-	return result, nil
-}
-
-// MSet 批量设置缓存值。
-func (c *memoryCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
-	_ = ctx
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	exp := time.Time{}
-	if ttl <= 0 {
-		ttl = c.defaultTTL
-	}
-	if ttl > 0 {
-		exp = time.Now().Add(ttl)
-	}
-
-	for key, value := range items {
-		if existing, ok := c.items[key]; ok {
-			existing.value = cloneBytes(value)
-			existing.expiration = exp
-			existing.createdAt = time.Now()
-			continue
-		}
-		if c.maxSize > 0 && len(c.items) >= c.maxSize {
-			c.evictOldestLocked()
-		}
-		c.items[key] = &cacheItem{
-			value:      cloneBytes(value),
-			expiration: exp,
-			createdAt:  time.Now(),
-		}
-	}
-
-	return nil
-}
-
-// MDelete 批量删除缓存。
-func (c *memoryCache) MDelete(ctx context.Context, keys []string) error {
-	_ = ctx
-	c.mu.Lock()
-	for _, key := range keys {
-		delete(c.items, key)
-	}
-	c.mu.Unlock()
-	return nil
-}
+var (
+	_ Cache          = (*Memory)(nil)
+	_ ExistenceCache = (*Memory)(nil)
+	_ BatchCache     = (*Memory)(nil)
+	_ AtomicCache    = (*Memory)(nil)
+	_ StatsCache     = (*Memory)(nil)
+)
