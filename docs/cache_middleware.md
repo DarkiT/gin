@@ -15,9 +15,10 @@
 - ✅ ETag 支持：自动生成 ETag 并处理 304 Not Modified
 - ✅ 自定义缓存键：灵活的缓存键生成策略
 - ✅ Cache-Control 头：自动设置缓存控制头
-- ✅ Vary 头：支持内容协商
+- ✅ Vary 头：支持内容协商，并按请求 Header 值隔离缓存键
 - ✅ 分布式缓存：支持外部缓存存储（如 Redis）
-- ✅ 测试覆盖率：96.9%
+- ✅ 安全默认值：默认跳过带 `Authorization` / `Cookie` 的请求，避免私有响应串用户缓存
+- ✅ 回归测试：覆盖命中、过期、Vary、认证跳过与私有响应不缓存
 
 ## 文件说明
 
@@ -25,7 +26,7 @@
 
 - `middleware/cache.go` - 缓存中间件核心实现
 - `middleware/etag.go` - ETag 中间件实现
-- `middleware/cache_test.go` - 单元测试（15 个测试用例）
+- `middleware/cache_test.go` - 单元测试与安全回归测试
 
 ### 示例文件
 
@@ -64,10 +65,11 @@ e.Use(middleware.ETag())
 ### 4. 自定义缓存键
 
 ```go
-// 根据用户 ID 生成缓存键
+// 公开资源可按业务维度生成缓存键。
+// 私有用户数据默认会因 Authorization/Cookie 跳过缓存，不建议仅靠 user_id 拼 key 后全局放行。
 e.Use(middleware.Cache(5*time.Minute,
     middleware.WithCacheKey(func(c *gin.Context) string {
-        return "profile:" + c.GetString("user_id")
+        return "public-article:" + c.Param("id")
     }),
 ))
 ```
@@ -84,8 +86,8 @@ e.Use(middleware.Cache(time.Minute,
 ### 6. 分布式缓存
 
 ```go
-// 使用自定义外部缓存适配器作为缓存存储
-customStore := &RedisCache{}
+// 使用 Fiber storage 兼容后端作为缓存存储
+customStore := cache.NewFiberStorage(raw)
 e.Use(middleware.Cache(time.Minute,
     middleware.WithCacheStore(customStore),
 ))
@@ -107,7 +109,11 @@ func Cache(duration time.Duration, opts ...CacheOption) gin.HandlerFunc
 
 **行为：**
 - 只缓存 GET 和 HEAD 请求
+- 默认跳过带 `Authorization` / `Cookie` 的请求
+- 默认跳过请求侧 `Cache-Control: no-cache/no-store` 或 `Pragma: no-cache`
 - 只缓存成功响应（2xx 状态码）
+- 不缓存带 `Set-Cookie` 的响应
+- 不缓存响应侧 `Cache-Control: private/no-cache/no-store`
 - 自动设置 `X-Cache` 头（HIT 或 MISS）
 
 ### CacheIf 中间件
@@ -146,7 +152,11 @@ func ETag() gin.HandlerFunc
 func WithCacheStore(store cache.Cache) CacheOption
 ```
 
-设置自定义缓存存储（用于分布式缓存）。
+设置自定义缓存存储（用于分布式缓存）。若使用 Fiber storage 生态后端，可直接传入：
+
+```go
+middleware.WithCacheStore(cache.NewFiberStorage(raw))
+```
 
 #### WithCacheKey
 
@@ -174,9 +184,17 @@ func WithCacheControl(control string) CacheOption
 func WithCacheVary(headers ...string) CacheOption
 ```
 
-设置 Vary 响应头，支持内容协商。
+设置 Vary 响应头，支持内容协商；对应请求 Header 值会纳入缓存键，避免不同语言、编码或内容协商维度共用同一响应。
 
 **示例：** `"Accept-Language", "Accept-Encoding"`
+
+#### WithCacheSkip
+
+```go
+func WithCacheSkip(skip func(*gin.Context) bool) CacheOption
+```
+
+设置跳过缓存的判断函数。返回 `true` 时本次请求完全绕过读取与写入缓存。
 
 ## 缓存响应结构
 
@@ -197,6 +215,8 @@ type cachedResponse struct {
 ```
 SHA256(method:path:querystring)
 ```
+
+如果配置 `WithCacheVary(...)`，请求侧对应 Header 值会追加进入缓存键。
 
 例如：
 - `GET /articles/123` → `cache:a1b2c3...`
@@ -236,7 +256,7 @@ SHA256(method:path:querystring)
 
 ## 测试用例
 
-实现了 15 个全面的测试用例：
+覆盖以下核心测试用例：
 
 ### Cache 中间件测试
 
@@ -250,6 +270,10 @@ SHA256(method:path:querystring)
 8. `TestCache_WithCacheControl` - Cache-Control 头
 9. `TestCache_WithVary` - Vary 头
 10. `TestCache_WithCustomStore` - 自定义存储
+11. `TestCache_SkipsAuthenticatedRequestsByDefault` - 默认跳过认证态请求
+12. `TestCache_VaryRequestHeadersPartitionCacheKey` - Vary 请求 Header 隔离缓存键
+13. `TestCache_DoesNotStorePrivateOrCookieResponses` - 私有响应与 Set-Cookie 不缓存
+14. `TestCache_WithSkipFunc` - 自定义跳过函数
 
 ### ETag 中间件测试
 
@@ -309,10 +333,10 @@ go run examples/cache-demo/main.go
 
 3. **响应头处理**
    - 缓存会保存所有响应头
-   - 某些头可能需要特殊处理（如 Set-Cookie）
+   - `Set-Cookie`、`private`、`no-cache`、`no-store` 响应默认不缓存
 
 4. **内存使用**
-   - 默认使用内存缓存
+   - 中间件默认使用无后台清理 goroutine 的内存缓存
    - 大规模应用应使用外部缓存存储
 
 5. **并发安全**
@@ -333,16 +357,9 @@ e.GET(
     getProducts,
 )
 
-// 用户相关 API，按用户缓存
-e.GET(
-    "/api/v1/user/orders",
-    engine.WrapMiddleware(middleware.Cache(1*time.Minute,
-        middleware.WithCacheKey(func(c *gin.Context) string {
-            return "orders:" + c.GetString("user_id")
-        }),
-    )),
-    getOrders,
-)
+// 用户相关 API 默认会因 Authorization/Cookie 跳过缓存。
+// 如确需缓存，必须显式确认命名空间与失效策略，例如按 tenant/user/role 生成 key，
+// 并使用 WithCacheSkip 放行经过审计的安全场景。
 ```
 
 ### 2. 静态资源
@@ -368,8 +385,8 @@ e.GET(
 ### 4. 分布式部署
 
 ```go
-// 使用自定义外部缓存适配器确保多实例缓存一致
-customStore := &RedisCache{}
+// 使用 Fiber storage 兼容后端确保多实例缓存一致
+customStore := cache.NewFiberStorage(raw)
 e.Use(middleware.Cache(time.Minute,
     middleware.WithCacheStore(customStore),
 ))
@@ -384,7 +401,7 @@ e.Use(middleware.Cache(time.Minute,
 - ✅ ETag 和 304 处理
 - ✅ 自定义缓存键
 - ✅ 分布式缓存支持
-- ✅ 高测试覆盖率（96.9%）
+- ✅ 安全默认值与回归测试
 - ✅ 生产级代码质量
 
 所有代码都遵循项目规范，使用中文注释，并提供了详细的使用示例和测试用例。

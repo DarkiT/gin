@@ -187,6 +187,13 @@
 - `StreamFile(...)`
 - `StreamFileInline(...)`
 
+说明：
+
+- `AsName(...)` 只接收纯文件名
+- 需要目录分类时，使用 `ToSubDir(...)` 显式落到上传根目录下的安全子目录
+- `SaveFiles(...)` 需要唯一目标名；批量自定义命名请用 `NameBy(...)`
+- `UploadResult.RelativePath` 是相对上传根目录的稳定路径
+
 模板：
 
 - `../assets/examples/file_upload_download.go.tmpl`
@@ -205,6 +212,21 @@
 ### 认证
 
 - `Auth()`
+
+### Cache / Mail / SMS
+
+- `Cache()`
+- `Mailer()`
+- `SMS()`
+
+说明：
+
+- `c.Cache()` 返回 Engine 托管的 `cache.Cache`
+- 注入 `WithCache(...)` 的实例会随 Engine 关闭
+
+继续读：
+
+- `./cache-storage-integration.md`
 
 ### WebSocket
 

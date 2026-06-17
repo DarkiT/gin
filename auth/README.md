@@ -39,6 +39,8 @@
 - 管理权限和角色
 - 支持强制登出和账户禁用
 - 提供刷新令牌、随机数和 OAuth2 辅助功能
+- 支持 RememberMe 登录、Token-Session 和分级封禁
+- 提供 API Key、临时 Token、参数签名与 Same-Token 能力
 - 支持可插拔的存储后端
 
 ## 核心概念
@@ -88,7 +90,8 @@ pair, err := c.Auth().Refresh(newRefreshToken)
 mgr := auth.NewManager(storage, &cfg)
 
 // 登录
-token, err := mgr.Login(loginID, device, permissoins...)
+token, err := mgr.Login(loginID, device)
+rememberMeToken, err := mgr.LoginRememberMe(loginID, device)
 pair, err := mgr.LoginWithRefreshToken(loginID, device)
 
 // 登出
@@ -107,17 +110,25 @@ hasRole := mgr.HasRole(loginID, role)
 
 // 会话
 session, _ := mgr.GetSession(loginID)
+tokenSession, _ := mgr.GetTokenSession(token, true)
 
 // 禁用/启用
-err := mgr.Disable(loginID)
-err := mgr.Enable(loginID)
+err := mgr.Disable(loginID, time.Hour)
+err := mgr.DisableLevel(loginID, "trade", 2, time.Hour)
+err := mgr.Untie(loginID)
 
 // 踢出
 err := mgr.Kickout(loginID)
 err := mgr.KickoutByToken(token)
 
 // 刷新令牌
-newToken, _ := mgr.RefreshAccessToken(refreshToken)
+newPair, _ := mgr.RefreshAccessToken(pair.RefreshToken)
+
+// OAuth2
+server := mgr.GetOAuth2Server()
+
+// 服务间调用令牌
+sameToken, _ := mgr.GetSameToken()
 ```
 
 ### Session
@@ -294,20 +305,29 @@ type AuthConfig struct {
 	// 令牌过期时间
 	Expiry time.Duration
 
+	// Refresh Token 过期时间
+	RefreshExpiry time.Duration
+
 	// 令牌样式
 	TokenStyle TokenStyle
 
-	// 令牌名称，默认 "Authorization"
+	// 令牌名称，默认 "satoken"
 	TokenName string
 
+	// 存储键前缀
+	KeyPrefix string
+
+	// 是否从 Header 读取令牌
+	ReadFromHeader bool
+
 	// 是否从 Cookie 读取令牌
-	AllowCookie bool
+	ReadFromCookie bool
 
 	// 是否从查询参数读取令牌
-	AllowQuery bool
+	ReadFromQuery bool
 
 	// 是否从表单读取令牌
-	AllowForm bool
+	ReadFromBody bool
 
 	// 是否允许并发登录
 	AllowConcurrent bool
@@ -327,14 +347,20 @@ type AuthConfig struct {
 	// 最大续期 TTL
 	MaxRefresh time.Duration
 
+	// 活跃超时
+	ActiveTimeout time.Duration
+
+	// Cookie 配置
+	CookieConfig *CookieConfig
+
 	// 存储后端
 	Storage Storage
 
 	// 权限加载器
-	PermissionLoader PermissionLoader
+	PermissionLoader func(loginID string) ([]string, error)
 
 	// 角色加载器
-	RoleLoader RoleLoader
+	RoleLoader func(loginID string) ([]string, error)
 }
 ```
 
@@ -406,6 +432,28 @@ mgr := auth.NewManager(storage, &cfg)
 - TTL 委托给 Redis
 - 基于扫描的键匹配
 
+### 通用 KV 存储适配
+
+如果你的后端已经实现 `pkg/storage.Store`，可以通过严格适配器接入认证主链：
+
+```go
+store := newAuthCapableStore() // storage.Store + storage.TTLStore + storage.KeyScanner
+storage, err := auth.NewKVStorage(store)
+if err != nil {
+	panic(err)
+}
+
+mgr := auth.NewManager(storage, &cfg)
+```
+
+严格模式要求底层至少支持：
+
+- `storage.TTLStore`：用于 `TTL`、`Expire`、`SetKeepTTL`
+- `storage.KeyScanner`：用于多端 Token 列表和登录数量统计
+
+如果只是基础 `storage.Store`，请优先接入 `pkg/cache`；不要把它直接作为完整 auth/session 后端。
+需要 OAuth2 操作锁走后端原子能力时，使用 `auth.NewAtomicKVStorage(...)`，底层必须真正实现原子 `SetNX`。
+
 ## 安全特性
 
 ### 刷新令牌支持
@@ -428,32 +476,75 @@ if err != nil {
 
 ```go
 // 生成随机数
-nonce, _ := mgr.GenerateNonce(token)
+nonce, _ := mgr.GenerateNonce()
 
 // 验证随机数（一次性使用）
-ok, _ := mgr.VerifyNonce(token, nonce)
+ok := mgr.VerifyNonce(nonce)
 ```
 
 ### OAuth2 支持
 
 ```go
+import authoauth2 "github.com/darkit/gin/auth/core/oauth2"
+
 server := mgr.GetOAuth2Server()
 
 // 客户端注册
-clientID, _ := server.RegisterClient("my-app", "secret")
+_ = server.RegisterClient(&authoauth2.Client{
+	ClientID:     "my-app",
+	ClientSecret: "secret",
+	RedirectURIs: []string{"https://client.example/callback"},
+	GrantTypes: []authoauth2.GrantType{
+		authoauth2.GrantTypeAuthorizationCode,
+		authoauth2.GrantTypeRefreshToken,
+	},
+	Scopes: []string{"profile:read"},
+})
 
-// 授权码
-code, _ := server.GenerateCode(token, clientID, "redirect-uri")
+// 授权码（授权后生成）
+code, _ := server.GenerateAuthorizationCode(
+	"my-app",
+	"https://client.example/callback",
+	"user-1001",
+	[]string{"profile:read"},
+)
 
 // 令牌交换
-tokenPair, _ := server.Exchange(code, clientID, "secret")
+tokenPair, _ := server.ExchangeCodeForToken(
+	code.Code,
+	"my-app",
+	"secret",
+	"https://client.example/callback",
+)
 
-// 刷新
-newPair, _ := server.Refresh(pair.RefreshToken)
+// 验证访问令牌
+_, _ = server.ValidateAccessToken(tokenPair.Token)
+
+// 刷新（成功后会轮换 refresh token）
+newPair, _ := server.RefreshAccessToken(tokenPair.RefreshToken, "my-app", "secret")
 
 // 撤销
-server.Revoke(token)
+_ = server.RevokeToken(newPair.Token)
 ```
+
+说明：
+
+- 客户端元数据、授权码、访问令牌和刷新令牌都存储在配置的存储后端中
+- 授权码是一次性的，并发兑换会通过操作锁收口
+- 刷新令牌交换成功后会轮换旧 refresh token，避免重复消费
+- `NewAtomicKVStorage(...)` 可为 OAuth2 操作锁提供后端原子 `SetNX`
+
+### 高级安全能力
+
+这些能力主要通过 `Manager` 访问，适合服务间调用、开放平台和二级安全校验：
+
+- `LoginRememberMe` / `IsRememberMeLogin`
+- `GetTokenSession` / `GetAnonTokenSession`
+- `DisableLevel` / `CheckDisableLevel`
+- `CreateApiKey` / `VerifyApiKey`
+- `CreateTempToken` / `VerifyTempToken`
+- `Sign` / `VerifySign`
+- `GetSameToken` / `RefreshSameToken` / `CheckSameToken`
 
 ### 权限系统
 
@@ -505,22 +596,25 @@ allRoles := mgr.HasRolesAnd("user-1001", "admin", "editor")
 | `CheckAllRoles(roles ...string) error` | 检查所有角色（AND） |
 | `CheckDisable() error` | 检查禁用状态 |
 | `GetSession() (*Session, error)` | 获取会话信息 |
-| `Refresh(refreshToken string) (*TokenPair, error)` | 刷新令牌 |
+| `RefreshToken(refreshToken string) (string, error)` | 刷新并返回新的 Access Token |
+| `RefreshTokenInfo(refreshToken string) (*RefreshTokenInfo, error)` | 刷新并返回完整令牌信息 |
 
 ### Manager 方法
 
 | 方法 | 说明 |
 |------|------|
 | `NewManager(storage Storage, cfg *AuthConfig) *Manager` | 创建管理器 |
-| `Login(loginID, device string, permissions ...string) (string, error)` | 登录 |
-| `LoginWithRefreshToken(loginID, device string) (*TokenPair, error)` | 带刷新的登录 |
+| `Login(loginID, device string) (string, error)` | 登录 |
+| `LoginRememberMe(loginID, device string) (string, error)` | 记住我登录 |
+| `LoginWithRefreshToken(loginID, device string) (*RefreshTokenInfo, error)` | 带刷新的登录 |
 | `Logout(token string) error` | 登出 |
 | `LogoutByLoginID(loginID string) error` | 按登录ID登出 |
 | `IsLogin(token string) bool` | 检查登录状态 |
 | `GetLoginID(token string) (string, error)` | 获取登录ID |
 | `GetTokenInfo(token string) (*TokenInfo, error)` | 获取令牌信息 |
-| `Disable(loginID string) error` | 禁用账户 |
-| `Enable(loginID string) error` | 启用账户 |
+| `Disable(loginID string, duration time.Duration) error` | 禁用账户 |
+| `DisableLevel(loginID, service string, level int, duration time.Duration) error` | 分级封禁 |
+| `Untie(loginID string) error` | 解除封禁 |
 | `Kickout(loginID string) error` | 踢出用户 |
 | `KickoutByToken(token string) error` | 按令牌踢出 |
 | `SetPermissions(loginID string, permissions []string)` | 设置权限 |
@@ -528,9 +622,10 @@ allRoles := mgr.HasRolesAnd("user-1001", "admin", "editor")
 | `HasPermission(loginID, permission string) bool` | 检查权限 |
 | `HasRole(loginID, role string) bool` | 检查角色 |
 | `GetSession(loginID string) (*Session, error)` | 获取会话 |
-| `RefreshAccessToken(refreshToken string) (string, error)` | 刷新令牌 |
-| `GenerateNonce(token string) (string, error)` | 生成随机数 |
-| `VerifyNonce(token, nonce string) (bool, error)` | 验证随机数 |
+| `GetTokenSession(token string, isCreate bool) (*Session, error)` | 获取 Token-Session |
+| `RefreshAccessToken(refreshToken string) (*RefreshTokenInfo, error)` | 刷新令牌 |
+| `GenerateNonce() (string, error)` | 生成随机数 |
+| `VerifyNonce(nonce string) bool` | 验证随机数 |
 
 ### MiddlewareBuilder 方法
 

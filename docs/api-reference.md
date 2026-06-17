@@ -46,6 +46,10 @@ go doc github.com/darkit/gin/auth
 - `func (e *Engine) OnStart(hooks ...lifecycle.Hook) *Engine`
 - `func (e *Engine) OnShutdown(hooks ...lifecycle.Hook) *Engine`
 - `func (e *Engine) OnStopped(hooks ...lifecycle.Hook) *Engine`
+- `func (e *Engine) Mailer() (*mail.Mailer, error)`
+- `func (e *Engine) SMS() (*sms.Service, error)`
+- `func (e *Engine) WithLogger(l logger.Logger) *Engine`
+- `func (e *Engine) WithCache(c cache.Cache) *Engine`
 
 常用配置入口位于：`options.go`
 
@@ -59,7 +63,14 @@ go doc github.com/darkit/gin/auth
 - `type Router struct`
 - `func (r *Router) GET(path string, handlers ...HandlerFunc) IRoutes`
 - `func (r *Router) POST(path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) PUT(path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) PATCH(path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) DELETE(path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) HEAD(path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) OPTIONS(path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) Any(path string, handlers ...HandlerFunc) IRoutes`
 - `func (r *Router) Handle(method, path string, handlers ...HandlerFunc) IRoutes`
+- `func (r *Router) GetHead(path string, handler HandlerFunc) IRoutes`（同时注册 GET + HEAD）
 - `func (r *Router) Use(handlers ...HandlerFunc) IRoutes`
 - `func (r *Router) UseAny(handlers ...any) IRoutes`
 - `func (r *Router) Group(path string, handlers ...HandlerFunc) *Router`
@@ -72,7 +83,37 @@ go doc github.com/darkit/gin/auth
 - `func (r *Router) Readiness(checks ...Probe)`
 - `func (r *Router) Startup(checks ...Probe)`
 - `func (r *Router) GETDoc(path string, handlers ...HandlerFunc) *SwaggerRouteInfo`
+- `func (r *Router) POSTDoc(path string, handlers ...HandlerFunc) *SwaggerRouteInfo`
+- `func (r *Router) PUTDoc(path string, handlers ...HandlerFunc) *SwaggerRouteInfo`
+- `func (r *Router) PATCHDoc(path string, handlers ...HandlerFunc) *SwaggerRouteInfo`
+- `func (r *Router) DELETEDoc(path string, handlers ...HandlerFunc) *SwaggerRouteInfo`
+- `func (r *Router) Resource(name string, ctrl ResourceController, opts ...ResourceOption)`
+- `func (r *Router) AutoRegister(controllers ...any)`
+- `func (r *Router) EmbedFS(fs embed.FS, root string, path string)`
+- `func (r *Router) EmbedFile(fs embed.FS, path string)`
 - `func WrapMiddleware(h gin.HandlerFunc) HandlerFunc`
+- `func AdaptHandler(h HandlerFunc) gin.HandlerFunc`
+
+#### SwaggerRouteInfo 链式方法
+
+| 方法 | 功能 |
+|---|---|
+| `Doc(summary)` | 接口摘要 |
+| `Description(desc)` | 详细描述 |
+| `Param(name, in, pType, desc, required)` | 参数声明 |
+| `ParamModel(name, in, model, desc, required)` | 模型参数 |
+| `Response(code, desc, models...)` | 响应声明 |
+| `ResponseExample(code, desc, example)` | 带示例的响应 |
+| `ResponseExamples(code, desc, examples)` | 多示例响应 |
+| `Tag(tags...)` | 标签分组 |
+| `Deprecated()` | 标记废弃 |
+| `Security(security)` | 安全声明 |
+| `OperationID(id)` | 操作 ID |
+| `RequestExample(example)` | 请求示例 |
+| `RequestExamples(examples)` | 多请求示例 |
+| `ProblemResponse(code, desc)` | RFC 9457 错误响应 |
+| `DefaultError(errors...)` | 默认错误声明 |
+| `DefaultErrors(errors)` | 批量默认错误声明 |
 
 ### RegexRouter
 
@@ -103,8 +144,11 @@ go doc github.com/darkit/gin/auth
 - `context_mask.go`
 - `context_auth.go`
 - `context_websocket.go`
-
-高频方法分组：
+- `context_stream.go`
+- `context_trace.go`
+- `context_problem.go`
+- `context_cursor_pagination.go`
+- `context_webhook_helpers.go`
 
 **参数与绑定**
 
@@ -115,53 +159,80 @@ go doc github.com/darkit/gin/auth
   - `PostForm`
   - `DefaultPostForm`
 - 项目增强的聚合取值：
-  - `Input`
-  - `ParamInt` / `ParamInt64` / `ParamFloat` / `ParamBool`
-  - `ParamIntE` / `ParamInt64E` / `ParamFloatE` / `ParamBoolE`
-  - `ParamTime`
+  - `Input(key, def...)` —— 按"路径参数 -> query -> form"统一取值
+  - `ParamInt` / `ParamInt64` / `ParamFloat` / `ParamBool` —— 类型化取值（不返回错误）
+  - `ParamIntE` / `ParamInt64E` / `ParamFloatE` / `ParamBoolE` —— 类型化取值（区分 `ErrParamNotFound` 与 `ErrParamInvalid`）
+  - `MustParamInt` / `MustParamInt64` / `MustParamFloat` / `MustParamBool` —— 不存在时 panic
+  - `ParamSlice` / `ParamIntSlice` —— 逗号分隔切片参数
+  - `ParamTime` / `ParamDuration` —— 时间/时长参数
+  - `RequireParams(keys...)` —— 检查必需参数
+  - `RequireParamsOrAbort(keys...)` —— 参数校验失败自动 400 + Abort
 - `BindAndValidate`
 - `BindJSONOrAbort`
 - `BindQueryOrAbort`
+- `JSONOrAbort`
 - `ParsePagination`
-- `ParseCursorPagination`
+- `ParseCursorPagination(opts...)`
 
 说明：
 
 - `Param(key string) string` 仅表示路径参数，行为与上游 `gin.Context.Param` 一致。
-- `Input(key, def...)` 会按“路径参数 -> query -> form”的顺序统一取值。
-- `ParamInt/ParamBool` 这类增强 helper 也基于 `Input(...)`，因此语义是“聚合输入解析”，而不是“只解析路径参数”。
+- `Input(key, def...)` 会按"路径参数 -> query -> form"的顺序统一取值。
+- `ParamInt/ParamBool` 这类增强 helper 也基于 `Input(...)`，因此语义是"聚合输入解析"，而不是"只解析路径参数"。
 
 **成功响应**
 
-- `Success`
-- `SuccessWithMessage`
-- `Created`
-- `Accepted`
-- `NoContent`
-- `Paginated`
-- `CursorPaginated`
+- `Success(data)`
+- `SuccessWithMessage(data, msg)`
+- `Created(data)`
+- `CreatedWithLocation(data, location)`
+- `Accepted(data)`
+- `NoContent()`
+- `Paginated(data, page, perPage, total)`
+- `CursorPaginated(data, info)`
+- `OKIf(condition, data)`
+- `OKMasked(data, opts...)` —— 脱敏后响应
 
 **错误响应**
 
-- `BadRequest`
-- `Unauthorized`
-- `Forbidden`
-- `NotFound`
-- `Conflict`
-- `ValidationError`
-- `InternalError`
-- `TooManyRequests`
-- `ServiceUnavailable`
-- `GatewayTimeout`
-- `Problem`
-- `WriteProblem`
-- `ValidationProblem`
+- `BadRequest(msg)`
+- `Unauthorized(msg)`
+- `Forbidden(msg)`
+- `NotFound(msg)`
+- `MethodNotAllowed(msg)`
+- `Conflict(msg)`
+- `Gone(msg)`
+- `ValidationError(errors)`
+- `TooManyRequests(msg...)`
+- `InternalError(msg)`
+- `ServiceUnavailable(msg)`
+- `GatewayTimeout(msg)`
+- `ErrorResponse(code, msg)`
+- `Problem(status, typeURI, title, detail)` —— RFC 9457
+- `WriteProblem(problem)` —— 写入 Problem Detail
+- `AbortWithProblem(status, typeURI, title, detail)` —— Problem + Abort
+- `ValidationProblem(errors, detail...)` —— 校验错误 Problem
+- `PaginatedMasked(data, page, perPage, total, opts...)` —— 脱敏分页响应
+
+**流式响应**
+
+- `Flush()`
+- `BeginSSE()` —— 初始化 SSE 响应头
+- `SSE(event, data)` —— 输出 SSE 消息
+- `SSEComment(comment)` —— SSE 注释
+- `SSEHeartbeat()` —— SSE 心跳
+- `BeginNDJSON()` —— 初始化 NDJSON 流头
+- `StreamNDJSON(data)` —— 输出 NDJSON 记录
 
 **文件与导出**
 
 - `SaveFile`
 - `SaveFiles`
 - `ValidateFile`
+- `ToDir`
+- `ToSubDir`
+- `AsName`
+- `NameBy`
 - `StreamFile`
 - `StreamFileInline`
 - `ExportExcel`
@@ -169,21 +240,41 @@ go doc github.com/darkit/gin/auth
 - `StreamExcel`
 - `StreamCSV`
 
+**请求体与 Webhook**
+
+- `RawBody()` —— 读取并缓存原始请求体
+- `MustRawBody()` —— 原始请求体，失败 panic
+- `RawBodyString()` —— 原始请求体字符串形式
+- `WebhookEventID(headers...)`
+- `WebhookSignature(headers...)`
+- `WebhookTimestamp(headers...)`
+
 **其他高频能力**
 
-- `Auth()`
-- `UpgradeWebSocket(...)`
+- `Auth()` —— 认证门面
+- `Mailer()`
+- `SMS()`
+- `UpgradeWebSocket(userID, opts...)` —— WebSocket 升级
 - `Logger()`
 - `Cache()`
-- `RequestID()`
+- `RequestID()` / `SetRequestID(id)`
 - `GetBearerToken()`
+- `GetBasicAuth()`
 - `IsSecure()`
 - `TraceID()`
 - `SpanID()`
-- `RawBody()`
-- `WebhookEventID()`
-- `WebhookSignature()`
-- `WebhookTimestamp()`
+- `GetIP()`
+- `GetUserAgent()`
+- `IsAjax()`
+- `IsJSON()` / `IsForm()` / `IsMultipart()`
+- `IsWebSocket()`
+- `IsGET` / `IsPOST` / `IsPUT` / `IsPATCH` / `IsDELETE` / `IsOPTIONS`
+- `AcceptsJSON()` / `AcceptsHTML()`
+- `Copy()` —— 请求外安全副本
+- `HasKey(key)`
+- `MustGet(key)` —— 断言式取值
+- `GetStringOr` / `GetIntOr` / `GetHeaderOr` / `GetCookieOr` —— 带默认值取值
+- `SetSecureCookie(name, value, maxAge)`
 
 ### Response / Pagination / Upload
 
@@ -195,10 +286,14 @@ go doc github.com/darkit/gin/auth
 
 关键类型：
 
-- `type Response struct`
-- `type Pagination struct`
-- `type ErrorResponse struct`
+- `type Response struct` —— 标准成功响应（Code / Message / Data / RequestID / Timestamp）
+- `type PaginatedResponse struct` —— 分页响应
+- `type Pagination struct` —— 分页元信息（Page / PerPage / Total / TotalPages）
+- `type ErrorResponse struct` —— 错误响应（支持字段级校验错误）
+- `type ValidationError struct` —— 字段级校验错误
 - `type PaginationParams struct`
+- `type CursorPaginationParams struct`
+- `type CursorPageInfo struct`
 - `type UploadConfig struct`
 - `type UploadResult struct`
 
@@ -216,9 +311,27 @@ go doc github.com/darkit/gin/auth
 
 - `type AuthContext`
 - `type Manager`
-- `func NewManager(...)`
-- `func NewStpLogic(...)`
-- `func AuthRequired(...) gin.HandlerFunc`
+- `type Storage`
+- `type TokenStyle`（9 种：UUID / Simple / Random32 / Random64 / Random128 / JWT / Hash / Timestamp / Tik）
+- `func NewManager(storage, cfg)`
+- `func NewMemoryStorage() Storage`
+- `func NewRedisStorage(redisURL string) (Storage, error)`
+- `func NewKVStorage(store storage.Store) (Storage, error)`
+- `func NewRelaxedKVStorage(store storage.Store) Storage`
+- `func NewAtomicKVStorage(store kv.AtomicStore) Storage`
+- `func NewStpLogic(mgr) *StpLogic`
+- `func NewMiddlewareBuilder(mgr) *MiddlewareBuilder`
+
+中间件：
+
+- `AuthRequired(mgr) gin.HandlerFunc`
+- `RoleRequired(mgr, roles...) gin.HandlerFunc`
+- `RoleRequiredAll(mgr, roles...) gin.HandlerFunc`
+- `PermRequired(mgr, permissions...) gin.HandlerFunc`
+- `PermRequiredAll(mgr, permissions...) gin.HandlerFunc`
+- `DisableCheck(mgr) gin.HandlerFunc`
+
+`NewKVStorage` 是通用 KV 后端进入 auth/session 主链的严格入口；底层必须支持 TTL 与 key 扫描能力。基础 `storage.Store` 更适合先接入 `pkg/cache`。
 
 ## middleware 包
 
@@ -236,6 +349,7 @@ go doc github.com/darkit/gin/auth
 - `Logger()`
 - `CORS(...)`
 - `RealIP()`
+- `RealIPStrict()`
 - `Timeout(d)`
 - `Secure()`
 - `RateLimit(...)`
@@ -248,15 +362,24 @@ go doc github.com/darkit/gin/auth
 - `ETag()`
 - `Idempotent(...)`
 - `OTel(service, opts...)`
-- `Throttle(...)`
+- `Throttle(...)` / `ThrottleBacklog(...)` / `ThrottleWithOpts(...)`
+- `Signature(secret, opts...)`
 - `ValidateParam(...)`
 - `NoCache()`
+- `Sunset(at, links...)`
+- `RouteHeaders()`
+- `URLFormat()`
+- `CircuitBreaker(...)`
+- `Interceptor(...)`
+- `Maybe(mw, fn)`
+- `WrapHeadHandler()`
 
 ## pkg 子模块
 
 按需查看：
 
 - `pkg/cache/README.md`
+- `pkg/storage/README.md`
 - `pkg/export/README.md`
 - `pkg/lifecycle/README.md`
 - `pkg/logger/README.md`
@@ -266,6 +389,13 @@ go doc github.com/darkit/gin/auth
 - `pkg/sms/README.md`
 - `pkg/validator/README.md`
 - `pkg/websocket/README.md`
+- `pkg/static/README.md`
+- `pkg/swagger/README.md`
+- `pkg/image/README.md`
+- `pkg/retry/README.md`
+- `pkg/concurrency/README.md`
+- `pkg/diagnostic/README.md`
+- `pkg/circuitbreaker/README.md`
 
 ## 示例与测试
 
@@ -276,6 +406,7 @@ go doc github.com/darkit/gin/auth
 - `examples/auto-register/main.go`
 - `examples/cache-demo/main.go`
 - `examples/swagger-demo/main.go`
+- `examples/streaming/main.go`
 - `*_test.go`
 
 ## 说明

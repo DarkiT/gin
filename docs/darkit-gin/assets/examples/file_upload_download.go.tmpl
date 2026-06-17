@@ -17,7 +17,11 @@ func main() {
 
 	r := e.Router()
 	r.POST("/upload", func(c *gin.Context) {
-		file, err := c.SaveFile("file")
+		file, err := c.SaveFile(
+			"file",
+			gin.ToSubDir("images/avatars"),
+			gin.AsName("user-1001.png"),
+		)
 		if err != nil {
 			c.BadRequest(err.Error())
 			return

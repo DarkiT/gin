@@ -7,7 +7,63 @@
 
 ## [Unreleased]
 
+### Security
+
+#### 安全审计修复 (2026-06-17)
+
+- **JWT 默认密钥静默回退移除**：`token.getJWTSecret` 在 `JwtSecretKey` 未配置时改为返回错误，杜绝用弱常量 `default-secret-key` 签发可被伪造的 JWT。
+- **限流信任链收紧**：移除 `RateLimitByUser` 对客户端可伪造的 `X-User-ID` 头的信任；限流 key 为空时回退到 IP 维度而非静默放行；`RealIP` 补充可信代理安全说明并新增 `RealIPStrict`（强制连接源地址，不信任代理头）。
+- **一次性凭证防重放原子化**：nonce / temp_token / 签名 nonce 的「先查再写」TOCTOU 窗口收紧——存储支持 `SetNX`（memory/kv）时多实例安全，否则降级进程内互斥；`middleware.NonceStore` 与 `IdempotentStore` 新增原子 `Reserve` 方法。
+- **签名校验顺序修正**：先验签后占用 nonce（签名错误不再消费 nonce），并补齐时间戳未来值双向校验。
+- **OAuth2 恒定时间比较**：`client_secret` / `client_id` 改用 `subtle.ConstantTimeCompare`，消除 timing 侧信道。
+- **CORS 凭证模式加固**：`AllowCredentials` 开启时禁止通配 `*` 反射任意 Origin，拒绝 `null` Origin，仅按 allowlist 精确匹配回写。
+- **幂等键绑定主体**：默认命名空间纳入 `user_id`，避免横向越权命中他人缓存；并发同 key 通过 `Reserve` 占位防重复执行。
+- **Token 经 URL 泄漏收敛**：`ReadTokenFromRequest` 的 Query 读取改为受 `IsReadQuery` 配置门控（默认关闭）。
+
+### Changed
+
+#### 并发安全与代码质量 (2026-06-17)
+
+- `manager.globalStpInterface` 改用 `atomic.Pointer`，消除运行期热替换 data race。
+- `RegexRouter.NotFound` 读写均纳入 root 写/读锁，消除 404 处理器并发竞态。
+- `resourceCoordinator.start` 增加 `atomic.Bool` 快路径，避免每请求争用互斥锁。
+- `gin_chain` 的 unsafe 字段偏移补充编译期类型断言，gin 上游布局变更时 fail-fast。
+- 移除 `Engine.contextPool` 死代码字段。
+
+### CI
+
+- `ci.yml` 新增 `golangci-lint` 门禁 job，触发分支补充 `main`。
+- `Makefile` 的 `test` 目标将 `tdd-guard-go` 改为可选依赖（缺失时跳过），路径改用 `$(CURDIR)`，并自动创建 coverage 目录。
+
+### Documentation
+
+#### 文档与代码对齐（安全修复同步 · 2026-06-17）
+
+- `middleware/README.md`：补 `RealIPStrict` 用法与 `RealIP` 可信代理安全提示；更新 CORS 凭证模式约束；幂等补 namespace 默认绑 `user_id`、并发 409、失败释放占位说明。
+- `auth/API.md`：修正过时表述——`extractToken()` / `Token()` 的 Query 读取由 `ReadFromQuery` 配置控制（默认关闭），不再「总是检查查询参数」。
+- `DESIGN.md`：修正 `Context.GetIP()` 行号引用（`context.go:112-121`）与描述，补可信代理治理与 `RealIPStrict` 建议。
+- `docs/api-reference.md`、`docs/darkit-gin/references/{middleware-catalog,capability-inventory}.md`：补 `RealIPStrict` 清单项，同步幂等默认 namespace 与并发防护语义。
+
 ### Added
+
+#### 文档对齐与重构 (2026-05-30)
+
+- **README 重构**
+  - 删除「路由组织」「API 文档」「重复 SMS 段」三重冗余内容
+  - 修复多处 Go 代码示例风格问题：未声明变量、类型不准确、变量名冲突
+  - 目录同步精简
+
+- **API 参考补齐**
+  - `docs/api-reference.md`：补齐 `AbortWithProblem`、`MustParamInt*`、`MustRawBody`、`OKMasked`/`PaginatedMasked`、SSE/NDJSON 全系列、SwaggerRouteInfo 链式方法等 20+ 遗漏项
+
+- **使用指南补充**
+  - `docs/usage.md`：新增正则路由、流式输出（SSE/NDJSON）、Problem Details、脱敏响应、Webhook 接收器 5 个小节
+
+- **翻译修复**
+  - `auth/API.md`：修复 7 处机器翻译遗留（"饼干" → "Cookie" 等）
+
+- **Swagger 文档更新**
+  - `SWAGGER_IMPLEMENTATION.md`：补充 8 个缺失的链式注解方法
 
 #### 熔断器指标导出 (2025-01-14)
 
@@ -362,7 +418,7 @@
   - `WithRegexPattern(methodName, pattern)` - 自定义正则模式
   - `WithMiddleware(middlewares...)` - 添加中间件
 
-#### Chi 框架集成 (2024-12-XX)
+#### Chi 框架集成 (2024-12-23)
 
 - **Router.Use() 原生支持 Chi 中间件**
   - 自动识别并适配 Chi 风格中间件 `func(http.Handler) http.Handler`
@@ -379,7 +435,7 @@
   - `RouteHeaders(pairs...)` - 基于 Header 的路由分发
   - `ValidateParam(param, pattern, errorMsg)` - 路由参数正则验证
 
-#### Context 方法补充 (2024-12-XX)
+#### Context 方法补充 (2024-12-23)
 
 - **参数解析方法**
   - `ParamFloat(key, def...)` - 获取 float64 参数
@@ -405,7 +461,7 @@
 
 ### Fixed
 
-#### 代码质量改进 (2024-12-XX)
+#### 代码质量改进 (2024-12-23)
 
 - 修复 5 个代码评审发现的问题
   - 类型转换安全性

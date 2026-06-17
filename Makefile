@@ -137,12 +137,19 @@ install-dev-deps:
 	go install github.com/cosmtrek/air@latest
 
 # 测试
+# tdd-guard-go 为可选工具（仅 CNB 环境安装）：缺失时跳过，避免本地/GitHub CI 因 command not found 失败。
 test:
+	@mkdir -p ./coverage
 	$(GOTEST) -v ./... -coverprofile=./coverage/coverage.out
-	$(GOTEST) -json ./... 2>&1 | tdd-guard-go -project-root /workspace
+	@if command -v tdd-guard-go >/dev/null 2>&1; then \
+		$(GOTEST) -json ./... 2>&1 | tdd-guard-go -project-root $(CURDIR); \
+	else \
+		echo "tdd-guard-go 未安装，跳过 TDD 守护检查"; \
+	fi
 
 # 测试（带竞态检测）
 test-race:
+	@mkdir -p ./coverage
 	$(GOTEST) -v -race ./... -coverprofile=./coverage/coverage.out
 
 # 显示测试覆盖率

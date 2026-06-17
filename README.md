@@ -13,14 +13,13 @@
 - [快速开始](#快速开始)
 - [架构概览](#架构概览)
 - [配置说明](#配置说明)
-- [路由组织](#路由组织)
 - [中间件生态](#中间件生态)
 - [认证子系统](#认证子系统)
 - [工具能力包](#工具能力包)
-- [API 文档](#api-文档)
 - [性能基准](#性能基准)
 - [与 Gin 的关系](#与-gin-的关系)
 - [开发建议](#开发建议)
+- [文档索引](#文档索引)
 - [许可证](#许可证)
 
 ## 项目简介
@@ -61,6 +60,7 @@ github.com/darkit/gin
 │   ├── routes/          # 路由辅助
 │   ├── sms/             # 短信能力
 │   ├── static/          # 静态资源
+│   ├── storage/         # 通用 KV 存储适配
 │   ├── swagger/         # Swagger/OpenAPI
 │   ├── validator/       # 校验辅助
 │   └── websocket/       # WebSocket 能力
@@ -78,7 +78,7 @@ github.com/darkit/gin
 - `Default(opts ...OptionFunc)`：创建默认引擎，自动挂载 `RequestID`、`Recovery`、`Logger` 中间件
 - 内置默认组件：
   - `logger.NewNoop()` - 空日志器
-  - `cache.NewMemoryCache()` - 内存缓存
+  - `cache.NewMemory()` - 内存缓存
   - `lifecycle.NewManager()` - 生命周期管理器
   - `middleware.NewRegistry()` - 中间件注册表
 - 支持生命周期 Hook：`OnStart()`、`OnShutdown()`、`OnStopped()`
@@ -142,14 +142,18 @@ c.TooManyRequests()                 // 429
 
 ```go
 // 解析分页参数
-page, perPage := c.ParsePagination()
+page, perPage := c.ParsePagination(1, 20)
 
 // 分页响应
-c.Paginated(data, page, perPage, total)
+c.Paginated(data, page, perPage, int64(total))
 
 // 游标分页
-cursor, limit := c.ParseCursorPagination()
-c.CursorPaginated(data, cursor, limit, hasMore)
+params := c.ParseCursorPagination()
+c.CursorPaginated(data, &gin.CursorPageInfo{
+    Cursor: params.Cursor,
+    Limit:  params.Limit,
+    HasMore: hasMore,
+})
 ```
 
 #### 流式响应
@@ -181,9 +185,6 @@ token := c.GetBearerToken()
 `router.go` 提供增强型路由能力：
 
 ```go
-// 增强型处理器签名
-type HandlerFunc func(*Context)
-
 // REST 资源路由
 r.Resource("users", userController)
 r.CRUD("articles", articleController)
@@ -201,7 +202,7 @@ r.Readiness()
 r.Static("/static", "./public")
 r.Assets("/assets", "./public")
 r.Site("/app", "./dist")
-e.FallbackSite("./dist")
+r.FallbackSite("./dist")
 r.StaticFile("/favicon.ico", "./public/favicon.ico")
 r.EmbedFS("/static", embedFS, "dist")
 ```
@@ -219,14 +220,21 @@ r.EmbedFS("/static", embedFS, "dist")
 
 ```go
 // 直接在路由中使用 Chi 风格模式
-r.GET("/users/{id:[0-9]+}", handler)
-r.GET("/posts/{slug}", handler)
-r.GET("/files/*path", handler)
+r.GET("/users/{id:[0-9]+}", func(c *gin.Context) {
+	id := c.Param("id")
+	c.Success(gin.H{"id": id})
+})
+r.GET("/posts/{slug}", func(c *gin.Context) {
+	c.Success(gin.H{"slug": c.Param("slug")})
+})
+r.GET("/files/*path", func(c *gin.Context) {
+	c.Success(gin.H{"path": c.Param("path")})
+})
 
-// 高级控制
-rx := app.RegexRouter()
+// 高级控制 — 自定义 NoRoute 处理器
+rx := r.RegexRouter()
 rx.NotFound(func(c *Context) {
-    c.JSON(404, gin.H{"error": "not found"})
+	c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 })
 ```
 
@@ -400,10 +408,12 @@ app := gin.New(
 
 ```go
 app := gin.New(
-	gin.WithLogger(customLogger),
-	gin.WithCache(customCache),
+	gin.WithLogger(customLogger), // 实现 logger.Logger 接口
+	gin.WithCache(customCache),   // 实现 cache.Cache 接口
 )
 ```
+
+需要运行时托管的能力（如 `cache`、`auth`、`mail`、`sms`、受管 ZIP/static 资源）会在 `Run()` 前或首个请求进入前自动初始化，而不是在 `New(...)` 阶段直接产生副作用。`WithCache(...)` 注入的缓存由 Engine 接管生命周期，`Shutdown(...)` / `Run()` 退出时会调用 `Close()`；不要传入 `nil`。
 
 ### 上传配置
 
@@ -415,6 +425,23 @@ app := gin.New(
 	gin.WithAllowedExts("jpg", "png", "pdf"),
 )
 ```
+
+保存时如需按业务分类落到子目录，请显式使用 `ToSubDir(...)`，不要把路径塞进 `AsName(...)`：
+
+```go
+file, err := c.SaveFile(
+	"avatar",
+	gin.ToSubDir("images/avatars"),
+	gin.AsName("user-1001.png"),
+)
+```
+
+多文件上传若要自定义文件名，请为每个文件生成唯一目标名，不要给 `SaveFiles(...)` 传固定 `AsName(...)`。
+
+`SaveFile/SaveFiles` 返回的 `UploadResult` 现在同时包含：
+
+- `Path`：完整保存路径
+- `RelativePath`：相对上传根目录的稳定路径，便于入库、回传与拼接 URL
 
 ### Auth 配置
 
@@ -428,6 +455,38 @@ app := gin.New(
 )
 ```
 
+说明：
+
+- `WithAuth(...)` 在构造阶段负责配置校验与声明
+- `auth.Manager` 会在运行阶段由 `Engine` 自动初始化与回收
+- handler 内仍然直接使用 `c.Auth()`，不改变 Gin 主链使用方式
+
+### Mail / SMS 配置
+
+```go
+app := gin.New(
+	gin.WithMail(mail.MailConfig{
+		Host: "smtp.example.com",
+		Port: 587,
+		From: "noreply@example.com",
+	}),
+	gin.WithSMS(sms.SMSConfig{
+		Provider:  "tencent",
+		AccessKey: "ak",
+		SecretKey: "sk",
+		SignName:  "Demo",
+		AppID:     "1400000000",
+	}),
+)
+```
+
+说明：
+
+- `WithMail(...)` / `WithSMS(...)` 在构造阶段只做配置校验
+- runtime 会自动初始化 engine-scoped `Mailer` / `SMS` service
+- 请求内优先使用 `c.Mailer()` / `c.SMS()`
+- 应用级代码可使用 `app.Mailer()` / `app.SMS()`
+
 ### Swagger 配置
 
 ```go
@@ -440,47 +499,7 @@ app := gin.New(
 )
 ```
 
-## 路由组织
-
-### 资源路由
-
-```go
-r.Resource("users", userController)
-```
-
-自动注册以下路由：
-
-- `GET /users` - 列表
-- `POST /users` - 创建
-- `GET /users/:id` - 详情
-- `PUT /users/:id` - 更新
-- `PATCH /users/:id` - 部分更新
-- `DELETE /users/:id` - 删除
-
-### 正则路由
-
-```go
-// 直接使用 Chi 风格 pattern
-app.GET("/orders/{id:[0-9]+}", func(c *gin.Context) {
-	c.Success(gin.H{"order_id": c.Param("id")})
-})
-```
-
-### 自动注册
-
-```go
-type UserController struct{}
-
-func (u *UserController) GetProfile(c *gin.Context) {
-	c.Success(gin.H{"ok": true})
-}
-
-func main() {
-	app := gin.Default()
-	r := app.Router()
-	r.AutoRegister(&UserController{}, gin.WithPrefix("/api/users"))
-}
-```
+完整 Engine / Context / Router 所有方法清单请参考 [docs/api-reference.md](docs/api-reference.md)。
 
 ## 中间件生态
 
@@ -543,23 +562,25 @@ r.Use(chimw.Recoverer)
 #### 1. 引擎层级集成
 
 ```go
-e := ginx.New(
-	ginx.WithAuth(auth.AuthConfig{
+e := gin.New(
+	gin.WithAuth(auth.AuthConfig{
 		Secret:     "replace-me",
 		Expiry:     24 * time.Hour,
 		TokenStyle: auth.TokenStyleJWT,
 	}),
 )
 
-e.POST("/login", func(c *ginx.Context) {
+e.POST("/login", func(c *gin.Context) {
 	token, err := c.Auth().Login("user-1001", "web")
 	if err != nil {
 		c.InternalError(err.Error())
 		return
 	}
-	c.Success(ginx.H{"token": token})
+	c.Success(gin.H{"token": token})
 })
 ```
+
+`WithAuth(...)` 只声明认证配置；真实 `auth.Manager` 会在运行阶段由 `Engine` 托管初始化与关闭。
 
 #### 2. 请求层级集成
 
@@ -597,23 +618,45 @@ ok := auth.IsLogin(token)
 
 - **内存存储**：`auth.NewMemoryStorage()` - 适用于开发/测试
 - **Redis 存储**：`auth.NewRedisStorage(redisURL)` - 适用于生产环境
+- **通用 KV 存储**：`auth.NewKVStorage(store)` - 接入实现 `pkg/storage.Store`、`storage.TTLStore`、`storage.KeyScanner` 的后端
 
-详细文档请参考 [auth/README.md](auth/README.md) 和 [auth/DESIGN.md](auth/DESIGN.md)。
+```go
+mgr := auth.NewManager(auth.NewRedisStorage("redis://localhost:6379/0"), &cfg)
+```
+
+说明：基础 `storage.Store` 只适合 cache；完整 auth/session 后端必须具备 TTL、key 扫描与保留 TTL 写入能力。需要 OAuth2 操作锁使用后端原子能力时，使用 `auth.NewAtomicKVStorage(...)`。
+
+详细文档请参考 [auth/README.md](auth/README.md)、[auth/storage/kv/README.md](auth/storage/kv/README.md) 和 [auth/DESIGN.md](auth/DESIGN.md)。
 
 ## 工具能力包
 
 ### pkg/cache - 缓存抽象
 
 ```go
-c := cache.NewMemoryCache(
-	cache.WithMaxSize(1000),
-	cache.WithDefaultTTL(5*time.Minute),
+mc := cache.NewMemory(
+	cache.WithMaxEntries(1000),
 )
+defer mc.Close()
 
-// 使用接口
-c.Set(ctx, "key", value, time.Minute)
-val, _ := c.Get(ctx, "key")
+if err := mc.Set(context.Background(), "user:1", []byte("alice"), 5*time.Minute); err != nil {
+	// handle error
+}
+val, err := mc.Get(context.Background(), "user:1")
 ```
+
+如需复用 Fiber storage 生态中的 bbolt、badger、etcd、s3 等后端，可直接用 `cache.NewFiberStorage(...)` 注入：
+```go
+app := gin.New(
+	gin.WithCache(cache.NewFiberStorage(bbolt.New())),
+)
+```
+
+说明：
+
+- `pkg/storage` 只定义稳定抽象与适配层，不强制引入具体 Fiber storage driver
+- `cache.NewFiberStorage` 会把 Fiber storage 的 `nil, nil` miss 语义转换为 `cache.ErrNotFound`
+- 通过 `gin.WithCache(...)` / `app.WithCache(...)` 注入后，Engine 会接管缓存生命周期并在关闭时调用 `Close()`
+- auth 存储需要 `Keys`、`TTL`、`Expire`、`SetKeepTTL` 等增强能力；如需接入通用 KV 后端，请使用 `auth.NewKVStorage(...)` 的严格能力探测
 
 ### pkg/lifecycle - 生命周期管理
 
@@ -622,11 +665,11 @@ mgr := lifecycle.NewManager()
 mgr.SetShutdownTimeout(10 * time.Second)
 
 mgr.OnStart(func(ctx context.Context) error {
-	return nil // 启动任务
+	return nil
 })
 
 mgr.OnShutdown(func(ctx context.Context) error {
-	return db.Close() // 清理任务
+	return nil
 })
 
 mgr.Run(server, nil)
@@ -646,6 +689,52 @@ func (l *MyLogger) WithFields(fields map[string]any) logger.Logger { return l }
 
 app := gin.New()
 app.WithLogger(&MyLogger{})
+```
+
+### pkg/mail - Engine 作用域邮件发送
+
+```go
+app := gin.New(
+	gin.WithMail(mail.MailConfig{
+		Host: "smtp.example.com",
+		Port: 587,
+		From: "noreply@example.com",
+	}),
+)
+
+app.POST("/mail", func(c *gin.Context) {
+	mailer, err := c.Mailer()
+	if err != nil {
+		c.InternalError(err.Error())
+		return
+	}
+	_ = mailer.SendMail("user@example.com", "标题", "内容")
+	c.Success(gin.H{"ok": true})
+})
+```
+
+### pkg/sms - Engine 作用域短信发送
+
+```go
+app := gin.New(
+	gin.WithSMS(sms.SMSConfig{
+		Provider:  "tencent",
+		AccessKey: "ak",
+		SecretKey: "sk",
+		SignName:  "Demo",
+		AppID:     "1400000000",
+	}),
+)
+
+app.POST("/sms", func(c *gin.Context) {
+	service, err := c.SMS()
+	if err != nil {
+		c.InternalError(err.Error())
+		return
+	}
+	_, _ = service.SendCode("13800138000")
+	c.Success(gin.H{"ok": true})
+})
 ```
 
 ### pkg/websocket - WebSocket 支持
@@ -680,173 +769,6 @@ err := export.Excel(w, data, export.ExcelConfig{
 })
 ```
 
-### pkg/sms - 短信服务
-
-```go
-// 阿里云 SMS
-aliyun := sms.NewAliyunProvider(sms.AliyunConfig{
-	AccessKey:    "your-access-key",
-	AccessSecret: "your-access-secret",
-	SignName:     "YourSignName",
-})
-
-err := aliyun.Send(ctx, "13800138000", "SMS_123456", map[string]string{"code": "1234"})
-```
-
-详细文档请参考各子包的 README.md。
-
-## API 文档
-
-### Engine API
-
-```go
-// 创建引擎
-app := gin.New(opts ...OptionFunc)
-app := gin.Default(opts ...OptionFunc)
-
-// 启动服务
-err := app.Run()           // 监听默认 :8080
-err := app.Run(":9090")    // 监听指定地址
-
-// 优雅关闭
-err := app.Shutdown(ctx)
-
-// 生命周期钩子
-app.OnStart(hooks ...HookFunc)
-app.OnShutdown(hooks ...HookFunc)
-app.OnStopped(hooks ...HookFunc)
-
-// 获取路由器
-r := app.Router()
-rx := app.RegexRouter()
-```
-
-### Context API
-
-```go
-// 与上游 gin 一致的单一来源取值
-c.Param(key string) string
-c.Query(key string) string
-c.DefaultQuery(key, defaultValue string) string
-c.PostForm(key string) string
-c.DefaultPostForm(key, defaultValue string) string
-
-// 本项目增强的聚合取值
-c.Input(key string, defaults ...string) string
-c.ParamInt(key string, defaults ...int) int
-c.ParamInt64(key string, defaults ...int64) int64
-c.ParamFloat(key string, defaults ...float64) float64
-c.ParamBool(key string, defaults ...bool) bool
-c.ParamIntE(key string) (int, error)
-c.ParamInt64E(key string) (int64, error)
-c.ParamFloatE(key string) (float64, error)
-c.ParamBoolE(key string) (bool, error)
-
-// 响应方法
-c.Success(data any)
-c.Created(data any)
-c.Accepted(data any)
-c.NoContent()
-c.BadRequest(message string)
-c.Unauthorized(message string)
-c.Forbidden(message string)
-c.NotFound(message string)
-c.Conflict(message string)
-c.ValidationError(errors any)
-c.InternalError(message string)
-c.TooManyRequests()
-c.Error(code int, message string)
-
-// 分页
-c.ParsePagination() (page, perPage int)
-c.Paginated(data any, page, perPage, total int)
-c.ParseCursorPagination() (cursor string, limit int)
-c.CursorPaginated(data any, cursor string, limit int, hasMore bool)
-
-// 流式响应
-c.BeginSSE()
-c.SSE(event string, data any)
-c.SSEHeartbeat()
-c.BeginNDJSON()
-c.StreamNDJSON(obj any)
-
-// 请求信息
-c.GetIP() string
-c.GetUserAgent() string
-c.RequestID() string
-c.TraceID() string
-c.SpanID() string
-c.GetBearerToken() string
-c.IsAjax() bool
-c.IsJSON() bool
-c.IsSecure() bool
-
-// WebSocket
-c.UpgradeWebSocket(userID string, opts ...WSOption) (*websocket.WebSocket, error)
-
-// 获取组件
-c.Logger() logger.Logger
-c.Cache() cache.Cache
-c.Auth() *auth.AuthContext
-```
-
-### Router API
-
-```go
-// HTTP 方法
-r.GET(path string, handlers ...HandlerFunc)
-r.POST(path string, handlers ...HandlerFunc)
-r.PUT(path string, handlers ...HandlerFunc)
-r.PATCH(path string, handlers ...HandlerFunc)
-r.DELETE(path string, handlers ...HandlerFunc)
-r.HEAD(path string, handlers ...HandlerFunc)
-r.OPTIONS(path string, handlers ...HandlerFunc)
-r.Any(path string, handlers ...HandlerFunc)
-r.Match(methods []string, path string, handlers ...HandlerFunc)
-
-// 分组
-group := r.Group(prefix string, middleware ...HandlerFunc)
-
-// 资源路由
-r.Resource(name string, ctrl ResourceController, opts ...ResourceOption)
-r.CRUD(name string, ctrl ResourceController)
-
-// 版本化
-v := r.Version(v string) *Router
-r.VersionedAPI(version string, setup func(*Router))
-
-// 健康检查
-r.HealthCheck(paths ...string)
-r.Liveness(path ...string)
-r.Readiness(checks ...ProbeCheck)
-r.Startup(checks ...ProbeCheck)
-
-// 静态资源
-r.Static(relativePath string, root string)
-r.StaticFile(relativePath string, filepath string)
-r.StaticFS(relativePath string, sys http.FileSystem)
-r.Assets(relativePath string, root string, opts ...static.Option)
-r.AssetsFS(relativePath string, sys http.FileSystem, opts ...static.Option)
-r.Site(relativePath string, root string, opts ...static.Option)
-r.SiteFS(relativePath string, sys http.FileSystem, opts ...static.Option)
-r.SiteZip(relativePath string, zipPath string, opts ...static.Option)
-r.SiteEmbeddedZip(relativePath string, archive fs.FS, archivePath string, opts ...static.Option)
-r.EmbedFS(relativePath string, fsys embed.FS, subPath ...string)
-r.EmbedFile(relativePath string, file embed.FS, filePath string)
-
-e.FallbackSite(root string, opts ...static.Option)
-e.FallbackSiteFS(sys http.FileSystem, opts ...static.Option)
-e.FallbackSiteZip(zipPath string, opts ...static.Option)
-e.FallbackSiteEmbeddedZip(archive fs.FS, archivePath string, opts ...static.Option)
-
-// 自动注册
-r.AutoRegister(controller any, opts ...OptionFunc)
-r.WithPrefix(prefix string) OptionFunc
-r.WithMiddleware(mw ...HandlerFunc) OptionFunc
-```
-
-详细 API 文档请参考 [docs/api-reference.md](docs/api-reference.md)。
-
 ## 性能基准
 
 框架提供了路由基准测试文件 [routing_bench_test.go](routing_bench_test.go)，用于对比不同路由场景的性能：
@@ -869,6 +791,7 @@ go test -run '^$' -bench '^BenchmarkRouting$|^BenchmarkRoutingParallel$' -benchm
 - 底层仍使用 `github.com/gin-gonic/gin`
 - 路由匹配、HTTP 处理、上下文基础能力仍沿用 Gin
 - 根模块在此基础上增加更适合业务项目的工程化能力
+- 上游公开面对齐状态与剩余映射边界见 [Gin 上游公开面对齐说明](docs/gin-upstream-compat.md)
 
 如果你已经熟悉 Gin，这个模块的上手成本会很低。
 
@@ -885,6 +808,8 @@ go test -run '^$' -bench '^BenchmarkRouting$|^BenchmarkRoutingParallel$' -benchm
 
 - [使用指南](docs/usage.md)
 - [API 参考](docs/api-reference.md)
+- [Gin 上游公开面对齐说明](docs/gin-upstream-compat.md)
+- [扩展能力与兼容迁移对照表](docs/extension-compat-mapping.md)
 - [缓存中间件说明](docs/cache_middleware.md)
 - [静态资源设计说明](docs/static-design.md)
 - [Swagger 实现说明](SWAGGER_IMPLEMENTATION.md)
@@ -912,6 +837,7 @@ go test -run '^$' -bench '^BenchmarkRouting$|^BenchmarkRoutingParallel$' -benchm
 - [pkg/routes/README.md](pkg/routes/README.md) - 路由辅助
 - [pkg/sms/README.md](pkg/sms/README.md) - 短信服务
 - [pkg/static/README.md](pkg/static/README.md) - 静态资源
+- [pkg/storage/README.md](pkg/storage/README.md) - 通用 KV 存储适配
 - [pkg/swagger/README.md](pkg/swagger/README.md) - Swagger/OpenAPI
 - [pkg/validator/README.md](pkg/validator/README.md) - 校验辅助
 - [pkg/websocket/README.md](pkg/websocket/README.md) - WebSocket 支持
@@ -931,4 +857,4 @@ go test -run '^$' -bench '^BenchmarkRouting$|^BenchmarkRoutingParallel$' -benchm
 
 ## 许可证
 
-本项目基于 MIT 许可证开源。
+本项目基于 MIT 许可证开源。详细信息请参考 [LICENSE](LICENSE) 文件。

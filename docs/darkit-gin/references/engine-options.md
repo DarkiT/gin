@@ -39,23 +39,26 @@
 | `WithWriteTimeout(d)` | 写超时 | API / 导出接口 | 大文件导出不要设太短 |
 | `WithTrustedProxies(proxies)` | 受信代理 | 反向代理/Nginx/LB | 非法配置会 fail-fast |
 | `WithGracefulShutdown(timeout)` | 优雅停机超时 | 生产停机 | 与 deployment termination 配合 |
+| `WithStartupTimeout(timeout)` | 受管资源启动超时 | auth / mail / sms / 受管静态资源 | 仅约束运行时资源初始化，不改变 Gin 主链 |
 | `WithLogger(l)` | 自定义 logger | 接入业务日志体系 | 需实现 logger 接口 |
-| `WithCache(c)` | 自定义 cache | 接入 Redis/自定义缓存 | 影响 `c.Cache()` |
+| `WithCache(c)` | 自定义 cache | 接入 Redis/自定义缓存 | 影响 `c.Cache()`，Engine 关闭时调用 `Close()`，`nil` 会 fail-fast |
 | `WithUploadDir(dir)` | 上传目录 | 文件服务 | 与磁盘权限配套 |
 | `WithMaxFileSize(size)` | 单文件上限 | 上传保护 | 与前端限制保持一致 |
 | `WithMaxMultipartMemory(size)` | multipart 内存阈值 | 文件上传 | 同时会写入 Gin 设置 |
 | `WithAllowedExts(exts...)` | 扩展名白名单 | 上传保护 | 仅扩展名不足以防全部绕过 |
 | `WithUploadConfig(cfg)` | 完整上传配置 | 复杂上传策略 | `nil` 会被忽略 |
-| `WithMail(cfg)` | 初始化 mail provider | 发信能力 | 配置错误通常 fail-fast |
-| `WithSMS(cfg)` | 初始化短信 provider | 验证码 / 通知 | 某些 provider 需 side-effect import |
+| `WithMail(cfg)` | 声明 Mailer 配置 | 发信能力 | 构造阶段只校验，运行阶段自动初始化 engine-scoped Mailer |
+| `WithSMS(cfg)` | 声明 SMS 配置 | 验证码 / 通知 | 构造阶段只校验，运行阶段自动初始化 engine-scoped SMS service |
 | `EnableSwagger(cfg)` | 启用 Swagger/OpenAPI | 文档生成 | 依赖项目内 swagger 实现 |
-| `WithAuth(cfg)` | 初始化 auth manager | 登录/权限服务 | 配置校验失败会 panic |
+| `WithAuth(cfg)` | 声明 auth 配置 | 登录/权限服务 | 构造阶段只校验，运行阶段自动初始化 auth manager |
 | `Development()` | 开发预设 | 本地调试 | 偏宽松 |
 | `Production()` | 生产预设 | 线上服务 | 带更保守超时 |
 
 ## 防漂移提示
 
-- `WithCache(c)` 既可作为初始化 Option，也可在运行时通过 `e.WithCache(c)` 替换
+- `WithCache(c)` 既可作为初始化 Option，也可在运行时通过 `e.WithCache(c)` 替换；传入实例由 Engine 接管生命周期，停止时会调用 `Close()`
+- Fiber storage 生态后端优先通过 `cache.NewFiberStorage(raw)` 注入，不在框架主模块里添加具体 driver 依赖
+- `WithAuth(...)` / `WithMail(...)` / `WithSMS(...)` 在构造阶段保存并校验配置，真实 runtime 资源在 `Run()` 或首个请求前初始化
 - `EnableSwagger(cfg)` 只负责启用框架侧 Swagger/OpenAPI 集成；注解细节与输出结构要再看 `examples/swagger-demo/main.go` 与 `pkg/swagger/`
 - 若示例文档、README 与真实行为冲突，以 `options.go`、`engine.go` 与测试为准
 
@@ -93,9 +96,14 @@ e := gin.New(
 )
 ```
 
+请求内配套入口：
+
+- `c.Mailer()`
+- `c.SMS()`
+
 ## 常见坑
 
-### 1. 启动时直接 panic
+### 1. 构造阶段直接 panic
 
 优先检查：
 - `WithAuth` 配置是否通过校验
@@ -114,9 +122,11 @@ e := gin.New(
 优先检查：
 - 引擎是否通过 `WithAuth` 初始化
 - 当前 handler 是否来自该引擎
+- 若手工构造测试 `Context`，是否已经让 runtime 先完成资源初始化
 
 ## 下一跳
 
+- cache/storage：`./cache-storage-integration.md`
 - 认证：`./auth-integration.md`
 - 路由：`./router-patterns.md`
 - 排障：`./troubleshooting.md`

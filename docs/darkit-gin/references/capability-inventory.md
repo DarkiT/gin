@@ -1,10 +1,10 @@
 # Capability Inventory
 
-这份文件用于先回答一个最实际的问题：
+这份文件用于让上层应用调用方先回答一个实际问题：
 
-“当前 `github.com/darkit/gin` 这套代码，真实对外提供了哪些能力？”
+“我在业务项目里可以用 `github.com/darkit/gin` 的哪些能力，推荐从哪个入口接？”
 
-它不展开实现，只做基于当前代码导出面的能力盘点，并顺手标出推荐入口和不要误说的边界。
+它不展开实现，只做对外能力盘点，并标出推荐入口、生产边界和不要误说的地方。
 
 ## 目录
 
@@ -37,12 +37,28 @@
 
 - 地址、读写超时、优雅停机
 - 可信代理
-- logger / cache 注入
+- logger / cache 注入和生命周期托管
+- `pkg/storage` / Fiber storage 生态适配
 - 上传配置
 - mail / sms 注入
 - auth 初始化
 - Swagger/OpenAPI 初始化
 - 开发 / 生产预设
+
+## Gin 上游迁移视角
+
+调用方项目从 `gin-gonic/gin` 迁移时，优先把 `darkit/gin` 当增强兼容层使用：
+
+```go
+import gin "github.com/darkit/gin"
+```
+
+调用方应知道的边界：
+
+- 常见 Gin 心智仍成立：`Engine`、`Router`、`Context`、middleware 链、`gin.H`。
+- `Context` / `Engine` / `HandlerFunc` / `OptionFunc` 是增强 wrapper，不保证与上游类型完全同一 identity。
+- 低风险迁移先保持 `c.JSON`、`c.Query`、`c.Param` 等 Gin-compatible 写法，再逐步采用 `c.Success`、`c.Problem`、`Router()`、provider 注入。
+- 公开面对齐门禁 `internal/tools/gincompat` 只属于 `github.com/darkit/gin` 本仓维护流程；不要在普通调用方项目中运行或依赖它。
 
 ## 路由与 API 组织
 
@@ -252,6 +268,12 @@
 - `Timeout`
 - `CircuitBreaker`
 
+当前安全边界：
+
+- `middleware.Cache` 默认跳过认证态请求、私有响应、`Set-Cookie` 响应，并按 `Vary` 请求 Header 隔离 key
+- `middleware.Idempotent` 默认 key 纳入 method + request path + `Idempotency-Key` + namespace，默认 namespace 取 `user_id`（鉴权主体，防他人凭 key 命中你的缓存）；并发同 key 处理期间返回 `409`，失败/abort 自动释放占位；跨租户/自定义主体用 `WithIdempotentNamespaceFunc(...)`
+- auth `Login` 多步写入失败会做 best-effort rollback，避免 token/account/session 半登录状态残留
+
 ## 中间件资产
 
 当前代码中高频且值得在 Skill 里显式讲到的有：
@@ -262,6 +284,7 @@
 - `CORS`
 - `Secure`
 - `RealIP`
+- `RealIPStrict`
 - `Timeout`
 - `RateLimit`
 - `RateLimitByUser`
@@ -294,6 +317,7 @@
 - `pkg/swagger`
 - `pkg/routes`
 - `pkg/cache`
+- `pkg/storage`
 - `pkg/lifecycle`
 - `pkg/logger`
 - `pkg/mail`
@@ -307,6 +331,15 @@
 - `pkg/concurrency`
 - `pkg/circuitbreaker`
 - `pkg/diagnostic`
+
+### cache / storage 重点入口
+
+- `cache.NewMemory(...)`：TTL、LRU、批量、原子计数、统计、并发 `GetOrSet`
+- `cache.NewStorageCache(store)`：把 `pkg/storage.Store` 接成 `cache.Cache`
+- `cache.NewFiberStorage(raw)`：一行式复用 Fiber storage 生态后端
+- `fiberstore.New(raw)` / `fiberstore.NewWithConn[T](raw)`：结构兼容适配 Fiber storage
+- `storage.Store`：最小字节型 KV，miss 返回 `nil, nil`
+- `storage.TTLStore` / `storage.KeyScanner`：auth/session 这类强语义场景才需要的可选能力
 
 ## 不要虚构的边界
 
@@ -325,3 +358,5 @@
 - `middleware.OTel(...)` 只是官方 `otelgin` 的轻封装，不是完整观测平台
 - `Problem Details` 是标准错误响应能力，不等于完整 API 规范治理系统
 - `webhook helper` 提供读取与提取能力，不等于内建供应商 SDK
+- `pkg/storage` 是适配抽象，不内置 Redis/etcd/S3/Badger/Bbolt 具体 driver
+- Fiber storage 基础接口可直接用于 cache，但不是完整 auth/session 存储能力

@@ -1,7 +1,4 @@
 interface:
   display_name: "Darkit Gin"
-  short_description: "面向 github.com/darkit/gin 的接入、改造、排障与模板化实战 skill"
-  default_prompt: "Use $darkit-gin to build or modify a `github.com/darkit/gin` API, route, auth flow, upload or export handler, WebSocket or streaming endpoint, static or SPA delivery, Swagger/OpenAPI setup, or framework debugging task."
-
-policy:
-  allow_implicit_invocation: true
+  short_description: "Integrate and maintain the Darkit Gin framework"
+  default_prompt: "Use $darkit-gin to integrate or maintain github.com/darkit/gin with tests and docs synced."

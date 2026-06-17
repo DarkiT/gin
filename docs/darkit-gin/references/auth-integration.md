@@ -8,6 +8,7 @@
 - 角色 / 权限
 - refresh token 相关能力
 - OAuth2 primitives
+- 基于 `pkg/storage` 的 strict / relaxed / atomic KV 适配
 
 ## 认证接入的三层模型
 
@@ -19,7 +20,7 @@
 这是最常见、最推荐的集成方式。
 
 效果：
-- 初始化 `auth.Manager`
+- 在运行阶段初始化 `auth.Manager`
 - 让请求内 `c.Auth()` 可用
 
 ## 2. Request 级使用
@@ -65,6 +66,19 @@
 
 如果自定义存储为空，通常会退回内存存储。
 
+通用 KV 后端接入 auth/session 时不要直接传基础 `storage.Store`：
+
+- 推荐 `auth.NewKVStorage(store)` 或 `auth/storage/kv.NewStrict(store)`
+- 底层必须支持 `storage.TTLStore` 与 `storage.KeyScanner`
+- 需要 OAuth2 操作锁走后端原子能力时，使用 `auth.NewAtomicKVStorage(...)`
+- 只实现基础 `storage.Store` 的后端优先用于 `pkg/cache`
+
+说明：
+
+- `WithAuth(...)` 在构造阶段只保存配置并完成校验
+- `auth.Manager` 会在 `Run()` 或首个请求进入前由 `Engine` 自动初始化
+- `Login(...)` 的 token/account/session 多步写入失败会做 best-effort rollback，避免残留半登录状态
+
 ## 常见坑
 
 ### `c.Auth()` 返回未配置错误
@@ -88,5 +102,8 @@
 
 ## 需要深入 auth 细节时
 
-先确认当前 workspace 是 gin 仓库，再读：
+调用方项目先读：
+- `./cache-storage-integration.md`
+
+只有当前 workspace 是 `github.com/darkit/gin` 本仓，才继续读：
 - `./repo-doc-map.md`

@@ -12,6 +12,7 @@
 - Swagger / OpenAPI 机器友好输出
 - OTel
 - 上传 / 下载 / 导出
+- cache / storage
 - 图片处理与脱敏
 - WebSocket
 - 推荐组合
@@ -189,8 +190,29 @@ e.UseAny(
 
 - `../assets/examples/file_upload_download.go.tmpl`
 - `../assets/examples/export_excel_csv.go.tmpl`
+- `../assets/examples/cache_storage.go.tmpl`
 
-## 9. 图片处理与脱敏
+## 9. cache / storage
+
+推荐入口：
+
+- 请求内缓存：`c.Cache()`
+- Engine 注入：`gin.WithCache(...)`
+- 本地内存：`cache.NewMemory(...)`
+- Fiber storage 生态：`cache.NewFiberStorage(raw)`
+- 任意 `pkg/storage.Store`：`cache.NewStorageCache(store)`
+
+生产边界：
+
+- `WithCache(...)` 注入后由 Engine 托管 `Close()`
+- 响应缓存默认跳过认证态请求和私有响应
+- Auth/session 存储不要只接最小 KV，优先用 strict adapter 检查能力
+
+继续读：
+
+- `./cache-storage-integration.md`
+
+## 10. 图片处理与脱敏
 
 图片处理能力：
 
@@ -207,7 +229,7 @@ e.UseAny(
 - 上传图片时顺手压缩、裁剪、生成多尺寸
 - 对用户资料、手机号、证件字段做统一脱敏输出
 
-## 10. WebSocket
+## 11. WebSocket
 
 根包真实提供：
 
@@ -219,7 +241,7 @@ e.UseAny(
 - 即时消息
 - 状态订阅
 
-## 11. 推荐组合
+## 12. 推荐组合
 
 ### 现代对外 API
 
@@ -229,6 +251,7 @@ e.UseAny(
 - `Request/Response Examples`
 - `RequestID`
 - `OTel`
+- public-only `middleware.Cache`
 
 ### AI / Agent / Streaming API
 
@@ -243,11 +266,13 @@ e.UseAny(
 - `OTel`
 - `RequestID`
 
-## 12. 对应模板与示例
+## 13. 对应模板与示例
 
 - 模板：`../assets/examples/streaming_webhook.go.tmpl`
 - 模板：`../assets/examples/file_upload_download.go.tmpl`
 - 模板：`../assets/examples/export_excel_csv.go.tmpl`
+- 模板：`../assets/examples/cache_storage.go.tmpl`
 - repo 示例：`examples/streaming/main.go`
 - repo 示例：`examples/probes/main.go`
 - repo 示例：`examples/swagger-demo/main.go`
+- cache/storage：`./cache-storage-integration.md`

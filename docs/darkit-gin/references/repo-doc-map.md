@@ -18,7 +18,7 @@
 - 当前目录存在 `go.mod`
 - `go.mod` 中的 `module` 为 `github.com/darkit/gin`
 
-如果不满足，请停止使用下面这些 repo-local 路径，改为搜索 live code。
+如果不满足，请停止使用下面这些 repo-local 路径；回到调用方项目自身代码，并仅把 Skill references 当作接入知识库。
 
 ## 先看哪些仓库文档
 
@@ -50,6 +50,9 @@
 - `pkg/swagger/README.md`
 - `pkg/routes/README.md`
 - `pkg/cache/README.md`
+- `pkg/storage/README.md`
+- `pkg/cache/DESIGN.md`
+- `auth/storage/kv/README.md`
 - `pkg/export/README.md`
 - `pkg/lifecycle/README.md`
 - `pkg/logger/README.md`
@@ -96,13 +99,24 @@
 - `context_mask.go`
 - `context_auth.go`
 - `context_websocket.go`
+- `resource_cache.go`
+- `pkg/cache/cache.go`
+- `pkg/cache/memory.go`
+- `pkg/cache/storage.go`
+- `pkg/storage/storage.go`
+- `pkg/storage/fiberstore/fiberstore.go`
+- `auth/storage/kv/storage.go`
+- `middleware/cache.go`
+- `middleware/idempotent.go`
+- `internal/tools/gincompat/`
 
 ## 当你在查什么时，先看哪里
 
 | 你要确认什么 | 先看哪里 |
 | --- | --- |
-| Gin 兼容边界 | `docs/gin-upstream-compat.md` |
+| Gin 兼容边界 | `docs/gin-upstream-compat.md`、`internal/tools/gincompat/` |
 | 老增强入口改名关系 | `docs/extension-compat-mapping.md` |
+| cache/storage 接入 | `pkg/cache/README.md`、`pkg/storage/README.md`、`auth/storage/kv/README.md` |
 | 静态站点 / SPA / ZIP 设计 | `docs/static-design.md`、`pkg/static/README.md` |
 | Swagger / OpenAPI | `SWAGGER_IMPLEMENTATION.md`、`examples/swagger-demo/main.go` |
 | 流式 / webhook / cursor | `examples/streaming/main.go` |
@@ -112,4 +126,4 @@
 
 - 先用 Skill 内 references 建立方向
 - 再用这里的 repo 文档做现场核对
-- 最后去 live code / 测试确认边界
+- 最后去本仓 live code / 测试确认边界

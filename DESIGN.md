@@ -20,12 +20,12 @@
    - 体现于 `Context` 包装和 `Router` 包装（`context.go:22-26`，`router.go:20-24`）。
 
 3. **低额外开销**
-   - 通过对象池、方法索引、缓存与连接池降低增强层成本。
+   - 通过轻量 wrapper、方法索引、缓存与连接池降低增强层成本。
    - 体现于 `Engine.contextPool`、`RegexRouter.paramsPool`、`routeCache`、`SMTPPool`（`engine.go:46`, `engine.go:64-68`, `regex_router.go:36`, `regex_router.go:50-55`, `auto_register.go:77-89`, `pkg/mail/mailer.go:48-84`）。
 
 4. **可插拔扩展**
    - 允许外部实现存储、短信 Provider、权限加载器、生命周期 Hook、中间件。
-   - 体现于 `auth` 存储接口、`sms.ProviderFactory`、`middleware.Registry`、`lifecycle.Manager`（`auth/core/adapter/storage.go:5-42`, `pkg/sms/sms.go:66-73`, `middleware/registry.go:20-108`, `pkg/lifecycle/manager.go:29-80`）。
+   - 体现于 `auth` 存储接口、`pkg/storage.Store`、`sms.ProviderFactory`、`middleware.Registry`、`lifecycle.Manager`（`auth/core/adapter/storage.go:5-42`, `pkg/storage/storage.go`, `pkg/sms/sms.go:66-73`, `middleware/registry.go:20-108`, `pkg/lifecycle/manager.go:29-80`）。
 
 5. **面向生产的安全与运行治理**
    - 在配置阶段尽早失败，在运行阶段返回可判定错误，并支持优雅停机。
@@ -49,7 +49,7 @@
 
 4. **不中断用户已有 Gin 中间件与 Handler 生态**
    - 扩展重点是“适配”而非“改写”。
-   - `Router.Use` 明确兼容增强 Handler、原生 Gin middleware、标准 `http.Handler` middleware（`router.go:241-300`）。
+   - `Router.Use` 保持上游形状；原生 Gin middleware 与标准 `http.Handler` middleware 通过 `UseAny(...)` 适配（`router.go:418-438`, `auto_register.go:439-453`）。
 
 ---
 
@@ -63,10 +63,10 @@ flowchart TD
     B --> C[Engine]
     C --> C1[*gin.Engine]
     C --> C2[Config / OptionFunc]
-    C --> C3[Context Pool]
+    C --> C3[Context Wrapper Factory]
     C --> C4[Lifecycle Manager]
     C --> C5[Middleware Registry]
-    C --> C6[Auth Manager]
+    C --> C6[Managed Resources]
     C --> C7[RegexRouter]
     C --> C8[Swagger Route Metadata]
 
@@ -80,14 +80,18 @@ flowchart TD
     E --> E2[Response / Bind / Upload / Export / Auth helpers]
 
     C6 --> F[auth.Manager]
-    F --> F1[Storage Adapter]
+    F --> F1[Auth Storage Adapter]
     F --> F2[Permission/Role Loader]
 
-    C --> G[Mail DefaultMailer]
+    C5 --> I[pkg/cache]
+    I --> I1[pkg/storage.Store]
+    I1 --> I2[fiberstore Adapter]
+
+    C6 --> G[engine-scoped Mailer]
     G --> G1[Mailer]
     G1 --> G2[SMTP Pool]
 
-    C --> H[SMS DefaultProvider]
+    C6 --> H[engine-scoped SMS Service]
     H --> H1[ProviderFactory Registry]
     H1 --> H2[Aliyun/Tencent/Custom Provider]
 ```
@@ -99,7 +103,7 @@ flowchart TD
 | Compatibility Layer | 保留 Gin API 模型，避免迁移断裂                         | `engine.go:29-47`, `gin_compat.go`                                     |
 | Enhancement Layer   | 提供增强 `Context`、`Router`、自动注册、Regex 路由      | `context.go`, `router.go`, `auto_register.go`, `regex_router.go`       |
 | Extension Layer     | 挂接 Auth、SMS、Mail、Swagger、Lifecycle                | `options.go:129-191`, `pkg/*`                                          |
-| Adaptation Layer    | 把 Gin / HTTP / Storage / RequestContext 接到统一调用面 | `router.go:241-300`, `auth/adapter.go`, `auth/core/adapter/storage.go` |
+| Adaptation Layer    | 把 Gin / HTTP / Storage / RequestContext 接到统一调用面 | `router.go:381-438`, `auto_register.go:439-453`, `auth/adapter.go`, `auth/core/adapter/storage.go`, `pkg/storage/storage.go`, `pkg/cache/cache.go` |
 
 ---
 
@@ -107,7 +111,7 @@ flowchart TD
 
 ### 1. Engine 使用组合而非继承
 
-`Engine` 直接嵌入 `*gin.Engine`，同时组合配置、日志、缓存、生命周期、Auth、RegexRouter、Context 池等协作者（`engine.go:29-47`）。
+`Engine` 直接嵌入 `*gin.Engine`，同时组合配置、日志、缓存、生命周期、Auth、RegexRouter、Context wrapper 等协作者（`engine.go:29-47`）。
 
 **理由**
 
@@ -120,19 +124,19 @@ flowchart TD
 - 优点：兼容性极强，迁移成本极低。
 - 代价：增强能力分散在包装层与被嵌入对象之间，文档必须明确“哪些能力来自 Gin，哪些来自增强层”。
 
-### 2. Context 采用请求期包装 + 跨请求池化
+### 2. Context 采用请求期包装 + 显式不池化回收
 
-`Context` 只是 `*gin.Context` + `engine *Engine` 的轻包装（`context.go:22-26`）；请求进入时由 `Engine.acquireContext` 从 `sync.Pool` 获取，请求结束后释放（`engine.go:79-92`，`router.go:47-66`）。
+`Context` 只是 `*gin.Context` + `engine *Engine` + `requestContext` 的轻包装（`context.go:22-26`）；请求进入时由 `Engine.acquireContext` 创建 wrapper 并捕获请求上下文，请求结束时 `releaseContext` 不做池化回收（`engine.go:102-120`，`router.go:32-43`）。
 
 **理由**
 
-- 避免每次路由执行都重新分配增强 `Context`。
+- 捕获请求上下文，使增强 `Context` 即使作为 `context.Context` 传入数据库层，也不会在请求结束后访问已复用的底层 Gin 对象。
 - 增强方法仍然建立在 Gin 的原始 request/response 生命周期之上。
 
 **权衡**
 
-- 优点：请求路径额外对象分配极低。
-- 代价：池化对象必须严格重置；当前只重置 `Context` 与 `engine` 指针，依赖 Gin 为每个请求提供新的 `gin.Context`（`engine.go:83-85`）。这要求增强 `Context` 不缓存跨请求状态。
+- 优点：避免增强 `Context` 逃逸后被复用导致数据竞争或 panic。
+- 代价：每个请求会产生一个轻量 wrapper 分配；这是为并发安全和 context 语义选择的成本。
 
 ### 3. 标准路由保持 Gin 主导，RegexRouter 仅作 fallback
 
@@ -150,12 +154,12 @@ flowchart TD
 
 ### 4. Middleware 采用“运行时适配”而非统一重写
 
-`Router.Use` 接受多种 middleware 形态：增强 `HandlerFunc`、`func(*Context)`、原生 `gin.HandlerFunc`、`func(*gin.Context)`、Chi/标准 `func(http.Handler) http.Handler`（`router.go:274-300`）。其中 `adaptHTTPMiddleware` 负责标准 HTTP middleware 与 Gin 链的桥接（`router.go:241-272`）。
+`Router.Use` 保持上游形状，只接受增强 `HandlerFunc` 并返回 `IRoutes`；多类型 middleware 适配迁移到 `UseAny(...)`，可接收增强 `HandlerFunc`、原生 `gin.HandlerFunc`、`func(*gin.Context)`、Chi/标准 `func(http.Handler) http.Handler`（`router.go:418-438`, `auto_register.go:439-453`）。其中 `adaptHTTPMiddleware` 负责标准 HTTP middleware 与 Gin 链的桥接（`router.go:381-415`）。
 
 **理由**
 
 - 让外部现有 middleware 能直接接入，无需迁移成本。
-- 对 Chi 风格 middleware，框架跟踪 `next.ServeHTTP` 是否被调用，以及响应是否已写出，从而避免重复写入（`router.go:243-270`）。
+- 对 Chi 风格 middleware，框架跟踪 `next.ServeHTTP` 是否被调用，以及响应是否已写出，从而避免重复写入（`router.go:381-415`）。
 
 **权衡**
 
@@ -164,7 +168,7 @@ flowchart TD
 
 ### 5. Middleware Registry 是注册目录，不是自动装配总线
 
-`Engine` 在创建时初始化 `middleware.Registry`（`engine.go:59-60`），而 `Registry` 支持注册、启停、排序和生成链（`middleware/registry.go:20-108`）。但当前请求主路径仍主要通过 `Engine.Use` / `Router.Use` 显式挂载 middleware，而不是自动从 `Registry` 拉链执行。
+`Engine` 在创建时初始化 `middleware.Registry`，而 `Registry` 支持注册、启停、排序和生成链（`middleware/registry.go:20-108`）。但当前请求主路径仍主要通过 `Engine.Use` / `Router.Use` / `UseAny` 显式挂载 middleware，而不是自动从 `Registry` 拉链执行。
 
 **理由**
 
@@ -236,28 +240,22 @@ type Engine struct {
     middleware  *middleware.Registry
     authManager *auth.Manager
     regexRouter *RegexRouter
-    contextPool sync.Pool
+    contextPool sync.Pool // 历史字段；当前不回收入池
 }
 ```
 
 - 参考：`engine.go:29-47`
 - 结论：这是典型 **composition over inheritance**；Gin 负责 HTTP 核心，扩展能力作为协作者注入。
 
-### Context pooling strategy
-
-```go
-contextPool: sync.Pool{
-    New: func() any { return &Context{} },
-}
-```
+### Context wrapper lifecycle
 
 ```go
 func (e *Engine) acquireContext(c *gin.Context) *Context
 func (e *Engine) releaseContext(ctx *Context)
 ```
 
-- 参考：`engine.go:64-68`, `engine.go:79-92`, `router.go:47-66`
-- 结论：增强 `Context` 是轻量 façade，通过池化压低请求期分配。
+- 参考：`engine.go:102-120`, `router.go:32-43`
+- 结论：增强 `Context` 是轻量 façade；当前每次请求创建 wrapper 并捕获 `requestContext`，`releaseContext` 不再回收到 `sync.Pool`，避免请求结束后仍被数据库层或异步逻辑持有时发生复用数据竞争。
 
 ### Middleware chain adaptation
 
@@ -269,7 +267,7 @@ func adaptHTTPMiddleware(mw func(http.Handler) http.Handler) gin.HandlerFunc
 - 检查 `c.Writer.Written()`
 - 若中间件未调用 `next`，自动 `Abort()`
 
-- 参考：`router.go:241-272`
+- 参考：`router.go:381-415`
 - 结论：这是 **middleware chain adaptation**，把 HTTP middleware 语义桥接到 Gin 执行模型。
 
 ### Provider factory pattern
@@ -285,6 +283,11 @@ func RegisterProvider(name string, factory ProviderFactory)
 
 ### Storage adapter pattern
 
+框架内同时存在两层 storage 语义：
+
+1. `pkg/storage.Store` 是通用字节型 KV 抽象，面向 cache、rate limit、idempotency 等轻量 KV 场景。
+2. `auth.Storage` 是认证专用增强存储，额外要求 `Keys`、`TTL`、`Expire`、`SetKeepTTL` 等 token/session 生命周期能力。
+
 ```go
 type Storage interface {
     Set(key string, value any, expiration time.Duration) error
@@ -294,8 +297,8 @@ type Storage interface {
 }
 ```
 
-- 参考：`auth/core/adapter/storage.go:5-42`
-- 结论：Auth 通过 **storage adapter pattern** 屏蔽不同后端。
+- 参考：`pkg/storage/storage.go`, `pkg/storage/fiberstore/fiberstore.go`, `pkg/cache/cache.go`, `auth/core/adapter/storage.go:5-42`
+- 结论：基础 KV 先进入 `pkg/storage`，再由 `cache.NewStorageCache` 接入 `pkg/cache`；Auth 仍通过专用 **storage adapter pattern** 屏蔽强语义后端，避免把 Fiber storage 基础接口误声明为完整 auth 后端。
 
 ---
 
@@ -307,9 +310,11 @@ type Storage interface {
 | ----------------------- | ------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------ |
 | Engine 配置             | `OptionFunc`                                | 启用/注入子系统           | `options.go:15-191`                                                            |
 | Middleware 目录         | `middleware.Registry`                       | 注册、启停、排序中间件    | `middleware/registry.go:20-119`                                                |
-| Router middleware       | `Router.Use(...any)`                        | 适配多类型 middleware     | `router.go:274-300`                                                            |
+| Router middleware       | `Router.Use(...)` / `Router.UseAny(...)`    | 上游形状与多类型适配分离  | `router.go:418-438`, `auto_register.go:439-453`                                |
 | AutoRegister Regex 覆盖 | `RegexPatternProvider` / `WithRegexPattern` | 自定义自动注册 Regex 路径 | `auto_register.go:17-23`, `auto_register.go:50-59`, `auto_register.go:182-201` |
-| Auth 存储               | `auth.Storage`                              | 替换会话/Token 后端       | `auth/core/adapter/storage.go:5-42`                                            |
+| 通用 KV 存储            | `pkg/storage.Store` + adapter               | 接入 Fiber storage 等后端 | `pkg/storage/storage.go`, `pkg/storage/fiberstore/fiberstore.go`               |
+| Cache 存储桥接          | `cache.NewStorageCache(store)` / `cache.NewFiberStorage(raw)` | 将通用 KV 或 Fiber storage 后端转为 Cache | `pkg/cache/storage.go` |
+| Auth 存储               | `auth.Storage` / `auth/storage/kv`          | 替换会话/Token 后端，严格探测 TTL 与 key 扫描能力 | `auth/core/adapter/storage.go:5-42`, `auth/storage/kv/storage.go` |
 | Auth 权限/角色加载器    | `PermissionLoader` / `RoleLoader`           | 与业务库对接              | `auth/config.go:112-121`, `auth/export.go:160-163`                             |
 | SMS Provider            | `RegisterProvider`                          | 接入自定义短信服务商      | `pkg/sms/sms.go:66-107`                                                        |
 | Lifecycle hooks         | `OnStart` / `OnShutdown` / `OnStopped`      | 接入启动/停机治理逻辑     | `pkg/lifecycle/manager.go:61-80`                                               |
@@ -326,8 +331,12 @@ flowchart LR
     B --> F[Swagger]
     B --> G[Lifecycle]
 
-    C --> C1[Storage Adapter]
+    C --> C1[Auth Storage Adapter]
     C --> C2[Permission/Role Loader]
+
+    B --> H[pkg/cache]
+    H --> H1[pkg/storage.Store]
+    H1 --> H2[Fiber storage compatible drivers]
 
     D --> D1[ProviderFactory Registry]
     D1 --> D2[Aliyun]
@@ -380,9 +389,9 @@ sequenceDiagram
 
 **实现对应**
 
-- `Engine.wrapHandlers`：`engine.go:142-153`
-- `wrapHandler` / `wrapHandlers`：`router.go:47-66`
-- `acquireContext` / `releaseContext`：`engine.go:79-92`
+- `Engine.wrapHandlers`：`engine.go`
+- `wrapHandler` / `wrapHandlersChain`：`router.go:32-43`, `gin_chain.go`
+- `acquireContext` / `releaseContext`：`engine.go:102-120`
 
 ### 2. Regex 路由 fallback 流
 
@@ -439,18 +448,17 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     A[OptionFunc] --> B{WithSMS / WithMail}
-    B --> C[Validate config]
-    C --> D1[InitDefaultProvider(SMS)]
-    C --> D2[InitDefaultMailer(Mail)]
-    D1 --> E1[ProviderFactory -> concrete provider]
-    D2 --> E2[Mailer instance]
+    B --> C[Validate config and save config]
+    C --> D[Engine.Run / first request]
+    D --> E1[Create engine-scoped SMS service]
+    D --> E2[Create engine-scoped Mailer]
     E2 --> F2[Optional SMTPPool]
 ```
 
 **说明**
 
-- `WithSMS`：命名 Provider 工厂注册表（`options.go:139-147`, `pkg/sms/sms.go:76-107`）。
-- `WithMail`：默认 Mailer 单例初始化（`options.go:129-137`, `pkg/mail/config.go:13-33`）。
+- `WithSMS`：构造阶段只校验并保存配置，真正实例化在运行阶段完成。
+- `WithMail`：构造阶段只校验并保存配置，真正 Mailer 创建在运行阶段完成。
 
 ---
 
@@ -480,7 +488,7 @@ flowchart LR
 - 按需兼容多种 middleware 类型
 - 提供资源路由、自动注册、Swagger 元数据采集
 
-参考：`router.go:17-24`, `router.go:47-66`, `router.go:274-312`, `auto_register.go:119-170`
+参考：`router.go:17-24`, `router.go:32-43`, `router.go:418-438`, `auto_register.go:119-170`, `auto_register.go:439-453`
 
 ### Context
 
@@ -538,7 +546,7 @@ flowchart LR
 ### 1. 启动期配置校验优先
 
 - `AuthConfig.Validate()` 强制 JWT 模式提供 `Secret`，并检查过期时间与 Token 风格合法性（`auth/config.go:234-252`）。
-- `WithMail` / `WithSMS` 在初始化默认实例前即执行校验，配置不合法直接失败（`options.go:129-147`）。
+- `WithMail` / `WithSMS` 在构造阶段即执行配置校验，配置不合法直接失败；真正实例由运行阶段受管资源创建（`options.go:129-147`）。
 
 **设计意图**
 
@@ -546,8 +554,9 @@ flowchart LR
 
 ### 2. 代理链与真实 IP 获取需要配套治理
 
-- `Context.GetIP()` 优先读取 `X-Real-IP` / `X-Forwarded-For`（`context.go:28-40`）。
-- 根模块同时提供 `SetTrustedProxies` / `WithTrustedProxies`（`engine.go:353-368`, `options.go:39-46`）。
+- `Context.GetIP()` 通过 `c.ClientIP()` 获取客户端 IP，遵循 Gin 的 `TrustedProxies` / `RemoteIPHeaders` 配置（`context.go:112-121`）。
+- 根模块同时提供 `SetTrustedProxies` / `WithTrustedProxies`（`engine.go:520`, `options.go:40`）。
+- ⚠️ Gin 默认信任全部代理，会解析客户端可伪造的 `X-Forwarded-For` / `X-Real-IP`。生产环境部署在反代之后**必须**显式 `SetTrustedProxies(真实反代 CIDR)`；直连或不希望解析代理头的场景，使用 `middleware.RealIPStrict()` 取 TCP 连接源地址。
 
 **设计权衡**
 
@@ -567,7 +576,7 @@ flowchart LR
 - middleware 执行后 `c.Writer.Written()`
 - `next.ServeHTTP` 是否被调用
 
-从而避免标准 HTTP middleware 与 Gin 链重复写入响应（`router.go:241-272`）。
+从而避免标准 HTTP middleware 与 Gin 链重复写入响应（`router.go:381-415`）。
 
 ### 5. Regex 参数统一走 Gin Path Params
 
@@ -585,10 +594,11 @@ SMTP TLS 显式设为 `tls.VersionTLS12`，并关闭 `InsecureSkipVerify`（`pkg
 
 ## 性能设计
 
-### 1. Context 对象池
+### 1. Context wrapper 生命周期
 
-- `sync.Pool` 复用增强 `Context`（`engine.go:46`, `engine.go:64-68`, `engine.go:79-92`）。
-- 适用于高 QPS 下的短生命周期对象。
+- `Engine.acquireContext` 为每个请求创建增强 `Context` wrapper，并捕获底层 `Request.Context()`（`engine.go:102-113`）。
+- `Engine.releaseContext` 当前不再把 wrapper 放回 `sync.Pool`，因为增强 `Context` 同时实现 `context.Context`，可能被数据库层或异步任务在请求结束后继续持有（`engine.go:115-120`）。
+- 该策略牺牲少量分配，换取跨请求复用安全与 race 稳定性。
 
 ### 2. RegexRouter chi-style 路由树 + 参数池
 
@@ -699,9 +709,10 @@ SMTP TLS 显式设为 `tls.VersionTLS12`，并关闭 `InsecureSkipVerify`（`pkg
 ### 3. 设计级测试建议
 
 1. **兼容性测试**
-   - 验证原生 Gin middleware 与增强 handler 混用。
+   - 验证上游公开名无缺失、公开子包导出清零缺口、核心方法集无 `incompatible` / `upstream_only`。
+   - 验证原生 Gin middleware 与增强 handler 通过 `UseAny(...)` 混用。
 2. **性能回归测试**
-   - 对 `Context` 池、RegexRouter 参数池、Mail 批量发送做 benchmark。
+   - 对 `Context` wrapper 分配、RegexRouter 参数池、Mail 批量发送做 benchmark。
 3. **安全回归测试**
    - 验证 trusted proxies 配置、JWT secret 校验、Cookie 属性行为。
 4. **扩展点契约测试**
@@ -715,7 +726,7 @@ SMTP TLS 显式设为 `tls.VersionTLS12`，并关闭 `InsecureSkipVerify`（`pkg
 | ---------------- | ------------------ | ---------------- | ------------------------- |
 | HTTP 主引擎      | 继续使用 Gin       | 兼容性与性能稳定 | 增强层需围绕 Gin 约束设计 |
 | Regex 路由位置   | `NoRoute` fallback | 不影响标准路径   | Regex 优先级低于标准路由  |
-| Context 生命周期 | `sync.Pool`        | 降低分配         | 需避免跨请求状态残留      |
+| Context 生命周期 | 每请求轻量 wrapper | 避免复用数据竞争 | 相比池化多一次小对象分配  |
 | Middleware 模型  | 多形态适配         | 兼容广泛生态     | 边界语义更复杂            |
 | 扩展架构         | 子域专用抽象       | 更贴近问题       | 插件风格不完全统一        |
 | 配置错误处理     | 启动期失败         | 及早暴露问题     | Option 中存在 panic 语义  |
@@ -731,8 +742,9 @@ SMTP TLS 显式设为 `tls.VersionTLS12`，并关闭 `InsecureSkipVerify`（`pkg
    - 工厂注册表（类似 SMS），还是
    - 适配器接口（类似 Auth Storage），还是
    - façade + option + pool（类似 Mail）。
-4. 若新增请求期对象，需评估是否进入 `sync.Pool`，并明确 reset 语义。
-5. 若把 `middleware.Registry` 从“目录”升级为“自动装配主路径”，必须同步更新执行顺序、调试可见性与文档说明。
+4. 若接入通用 KV 后端，优先经过 `pkg/storage.Store`；只有后端满足 `Keys`、`TTL`、`Expire`、`SetKeepTTL` 等能力时，才可进入完整 Auth 存储适配。
+5. 若新增请求期对象，需评估是否允许被请求外持有；只有能严格证明不会逃逸时，才可进入 `sync.Pool`，并必须明确 reset 语义。
+6. 若把 `middleware.Registry` 从“目录”升级为“自动装配主路径”，必须同步更新执行顺序、调试可见性与文档说明。
 
 ---
 
@@ -747,9 +759,9 @@ SMTP TLS 显式设为 `tls.VersionTLS12`，并关闭 `InsecureSkipVerify`（`pkg
 其最重要的五个实际架构模式是：
 
 - **Engine composition over inheritance**（`engine.go:29-47`）
-- **Context pooling strategy**（`engine.go:64-92`, `router.go:47-66`）
-- **Middleware chain adaptation**（`router.go:241-300`）
+- **Context wrapper lifecycle**（`engine.go:102-120`, `router.go:32-43`）
+- **Middleware chain adaptation**（`router.go:381-438`, `auto_register.go:439-453`）
 - **Provider factory pattern**（`pkg/sms/sms.go:66-107`）
-- **Storage adapter pattern**（`auth/core/adapter/storage.go:5-42`）
+- **Storage adapter pattern**（`pkg/storage/storage.go`, `auth/core/adapter/storage.go:5-42`）
 
 这些模式共同决定了该模块的边界：**不替代 Gin，但系统性增强 Gin。**

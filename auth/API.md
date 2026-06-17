@@ -111,6 +111,7 @@ redis://:password@localhost:6379/1
 type AuthConfig struct {
     Secret          string
     Expiry          time.Duration
+    RefreshExpiry   time.Duration
     TokenName       string
     TokenStyle      TokenStyle
     KeyPrefix       string
@@ -143,18 +144,19 @@ type AuthConfig struct {
 
 - `Secret`：使用 `TokenStyleJWT` 时必需
 - `Expiry`：令牌生存期；必须大于零
-- `TokenName`：用于头部/饼干/查询查找的逻辑令牌名称
+- `RefreshExpiry`：刷新令牌生存期；默认与 `Expiry` 一致
+- `TokenName`：用于 Header/Cookie/Query 查找的令牌名称
 - `TokenStyle`：令牌生成策略
 - `KeyPrefix`：存储键前缀
 
 #### 令牌读取源字段
 
 - `ReadFromHeader`：启用从名为 `TokenName` 的请求头部查找令牌
-- `ReadFromCookie`：启用从名为 `TokenName` 的饼干查找
-- `ReadFromQuery`：查询源意图的公共配置标志
+- `ReadFromCookie`：启用从名为 `TokenName` 的 Cookie 中查找
+- `ReadFromQuery`：启用从名为 `TokenName` 的 URL Query 参数查找（默认关闭）
 - `ReadFromBody`：启用从请求表单体查找
 
-> 注意：`AuthContext.extractToken()` 总是使用 `TokenName` 检查查询参数，而头部/饼干/体由配置标志控制。
+> 注意：`AuthContext.extractToken()` 的全部来源（Header / Cookie / Query / Body）均由对应配置标志控制。其中 `ReadFromQuery` **默认关闭**——Token 经 URL 传递会泄漏到 access log / Referer / 浏览器历史 / 反代日志（OWASP 反对的方式），仅在 apikey 等明确场景下显式开启。
 
 #### 登录并发字段
 
@@ -169,9 +171,9 @@ type AuthConfig struct {
 - `MaxRefresh`：触发续期的剩余 TTL 阈值
 - `ActiveTimeout`：公开暴露，为正时转换为核心配置
 
-#### 饼干字段
+#### Cookie 相关字段
 
-- `CookieConfig`：启用饼干支持时使用的饼干设置
+- `CookieConfig`：启用 Cookie 支持时使用的 Cookie 设置
 
 #### 存储和加载器
 
@@ -203,7 +205,7 @@ type CookieConfig struct {
 }
 ```
 
-当启用饼干支持时使用。
+当启用 Cookie 支持时使用。
 
 ## 请求级 API
 
@@ -240,7 +242,7 @@ type CookieConfig struct {
 
 1. 配置的头部 `TokenName`
 2. `Authorization: Bearer <token>`
-3. 启用时的饼干
+3. 启用时的 Cookie
 4. 查询参数
 5. 启用时的表单体
 
@@ -615,6 +617,88 @@ OR 角色检查。
 
 返回 OAuth2 助手服务器。
 
+### RememberMe
+
+#### `LoginRememberMe(loginID string, device ...string) (string, error)`
+
+按 RememberMe 模式登录，使用 `RememberMeTimeout` 作为令牌 TTL。
+
+#### `IsRememberMeLogin(tokenValue string) (bool, error)`
+
+判断一个令牌是否由 RememberMe 登录创建。
+
+### 分级封禁
+
+#### `DisableLevel(loginID, service string, level int, duration time.Duration) error`
+
+按 `loginID + service` 维度设置封禁等级。
+
+#### `GetDisableLevel(loginID, service string) int`
+
+返回当前封禁等级，不存在时返回未封禁等级。
+
+#### `IsDisableLevel(loginID, service string, level int) bool`
+
+判断当前封禁等级是否达到阈值。
+
+#### `CheckDisableLevel(loginID, service string, level int) error`
+
+当封禁等级达到阈值时返回错误。
+
+#### `UntieDisableServices(loginID string, services ...string) error`
+
+仅解除指定 `service` 维度的封禁标记。
+
+### Token-Session
+
+#### `GetTokenSession(tokenValue string, isCreate bool) (*session.Session, error)`
+
+加载或按需创建与访问令牌绑定的 Token-Session。
+
+#### `GetAnonTokenSession(currentToken string, ctx adapter.RequestContext) (*session.Session, error)`
+
+获取匿名 Token-Session，适合尚未登录但需要会话容器的场景。
+
+#### `DeleteTokenSession(tokenValue string) error`
+
+删除指定令牌对应的 Token-Session。
+
+#### `GetTokenSessionTimeout(tokenValue string) (int64, error)`
+
+返回 Token-Session 剩余 TTL。
+
+### API Key / Temp Token / Same-Token
+
+这些高级能力当前优先通过 `Manager` 直接访问；顶层全局 API 与 `StpLogic` 暂未完整镜像。
+
+#### API Key
+
+- `CreateApiKey(loginID, title string, expireSeconds int64, extra string) (*security.ApiKeyInfo, error)`
+- `GetApiKeyInfo(key string) (*security.ApiKeyInfo, error)`
+- `VerifyApiKey(key string) (*security.ApiKeyInfo, error)`
+- `DeleteApiKey(key string) error`
+- `DisableApiKey(key string) error`
+- `EnableApiKey(key string) error`
+
+#### 参数签名
+
+- `Sign(params map[string]string, secret string) string`
+- `VerifySign(params map[string]string, secret, timestamp, nonce, signature string, maxAgeSeconds int64) error`
+
+#### 临时 Token
+
+- `CreateTempToken(loginID string, expireSeconds int64, extra string) (*security.TempTokenInfo, error)`
+- `VerifyTempToken(token string) (*security.TempTokenInfo, error)`
+- `GetTempTokenInfo(token string) (*security.TempTokenInfo, error)`
+- `DeleteTempToken(token string) error`
+
+#### Same-Token
+
+- `GetSameToken() (string, error)`
+- `RefreshSameToken() (string, error)`
+- `CheckSameToken(tokenValue string) error`
+- `IsSameTokenValid(tokenValue string) bool`
+
 ## 全局包 API
 
 包暴露全局助手，镜像管理器 API，需要通过 `SetGlobalManager(...)` 初始化。
@@ -863,6 +947,26 @@ Redis 包本身中的额外导出构造函数包括：
 - `SET ... KeepTTL` 支持
 - 通过具体 redis 存储类型上的 `GetClient()` 访问底层 Redis 客户端
 
+## 通用 KV 存储
+
+通过 `NewKVStorage(store)` 可把 `pkg/storage.Store` 适配为认证存储。
+
+```go
+storage, err := auth.NewKVStorage(store)
+if err != nil {
+    return err
+}
+```
+
+严格入口要求底层同时支持：
+
+- `storage.TTLStore`
+- `storage.KeyScanner`
+
+宽松入口 `NewRelaxedKVStorage(store)` 只要求基础 `storage.Store`，但缺少 `Keys`、`TTL`、`Expire`、`SetKeepTTL` 时会在调用期返回不支持错误。生产认证主链优先使用严格入口。
+
+需要 OAuth2 操作锁使用后端原子能力时，使用 `NewAtomicKVStorage(store)`；底层必须实现 `auth/storage/kv.AtomicStore`，普通 adapter 不会提供非原子 `SetNX` fallback。
+
 ## OAuth2 API
 
 ## `OAuth2Server`
@@ -881,6 +985,10 @@ Redis 包本身中的额外导出构造函数包括：
 - `RevokeToken(tokenString string) error`
 
 客户端元数据、授权码、访问令牌和刷新令牌都存储在配置的存储后端中。授权码是一次性的，刷新令牌交换在成功时轮换刷新令牌。
+
+`OAuth2Server` 同时实现了 `granttype.ServerLike` 所需的发令、刷新和授权码消费接口，`processor` / `granttype` 处理链会复用同一套持久化语义，而不是绕开存储层单独造 token。
+
+当后端通过 `NewAtomicKVStorage(...)` 暴露原子 `SetNX` 时，OAuth2 会对授权码消费和 refresh 轮换使用后端操作锁；否则退回进程内互斥。
 
 ### 支持类型
 
@@ -920,6 +1028,8 @@ type RefreshTokenInfo struct {
 ```
 
 该类型实现二进制编组/解组以支持存储序列化。
+
+`Manager.RefreshAccessToken(...)` 在刷新访问令牌时会同步迁移 access token 与 account mapping，保持 memory / redis 后端下一致的登录态语义。
 
 ## 随机数 API
 
@@ -968,8 +1078,9 @@ type RefreshTokenInfo struct {
 引擎选项，它：
 
 - 验证配置
-- 当 `cfg.Storage` 为 nil 时默认选择内存存储
-- 创建并在引擎上存储认证管理器
+- 保存认证配置
+- 当 `cfg.Storage` 为 nil 时在运行阶段回退到内存存储
+- 在 `Run()` 或首个请求进入前创建并托管认证管理器
 
 ### `func (c *Context) Auth() *auth.AuthContext`
 
@@ -981,5 +1092,5 @@ type RefreshTokenInfo struct {
 - `TokenStyleJWT` 需要 `Secret`。
 - 内存存储是默认回退。
 - 令牌标签已导出但不支持。
-- `AuthContext.Token()` 总是尝试使用 `TokenName` 提取查询令牌。
+- `AuthContext.Token()` 按 `ReadFromHeader` / `ReadFromCookie` / `ReadFromQuery` / `ReadFromBody` 配置标志依次提取令牌；`ReadFromQuery` 默认关闭。
 - 通过 `c.Auth()` 的请求级使用是使用 `gin.WithAuth(...)` 时的预期主要集成路径。

@@ -1,140 +1,127 @@
 ---
 name: darkit-gin
-description: Use this skill when building, modifying, documenting, or debugging services that use `github.com/darkit/gin`, including enhanced `Engine`/`Router`/`Context`, auth flows, middleware composition, regex routes, uploads/downloads/exports, image or masking handlers, WebSocket handlers, static or SPA delivery, streaming/webhook handlers, probes, Swagger/OpenAPI, and framework integration issues.
+description: "Work with github.com/darkit/gin as a framework Skill. Use when integrating the framework into application projects or maintaining this repository: service bootstrap, migration from gin-gonic/gin, Engine/Router/Context usage, auth, middleware, cache/storage, uploads/downloads/exports, streaming/webhooks, static or SPA delivery, probes, Swagger/OpenAPI, upstream compatibility, public API changes, docs/examples sync, tests, and release gates."
 ---
 
 # darkit-gin
 
-这个 Skill 的定位不是“全文 API 手册”，而是：
+这个 Skill 是 `github.com/darkit/gin` 的可复用操作手册：既服务上层应用接入，也服务本仓维护。每次先确认当前 workspace 是“调用方项目”还是“框架仓库”，再选择对应链路。
 
-- 帮你快速判断任务落在哪个能力面
-- 只加载最小必要资料
-- 直接给出可复制的上手模板
-- 避免被旧语义、旧示例、上游 Gin 与本项目增强语义的差异误导
+## 上下文判定
 
-## 默认工作方式
+先看 `go.mod`：
 
-1. 先从调用方视角理解任务，而不是从内部实现视角展开
-2. 优先读取 `references/` 中最少量、最贴近任务的文件
-3. 优先复用 `assets/examples/` 的模板，而不是临时凭记忆写一份
-4. 需要核对真实行为时，再到当前 workspace 搜索 live code 和测试
+```bash
+go list -m
+```
 
-## 什么时候触发
+- 输出为 `github.com/darkit/gin`：进入 **本仓维护模式**，以源码、测试、docs、`internal/tools/gincompat` 为准。
+- 其他 module：进入 **应用接入模式**，优先保持调用方目录结构，不默认读取框架内部源码。
 
-当任务涉及以下任一场景时使用：
+## 固定工作流
 
-- 基于 `github.com/darkit/gin` 新建或修改 HTTP 服务
-- 设计或调整 `Engine`、`Router`、`Context` 用法
-- 需要先盘点这个框架到底提供哪些真实能力
-- 接入 `auth`、`middleware`、`pkg/*` 能力
-- 使用 `Resource`、`CRUD`、`AutoRegister`、`RegexRouter`
-- 接入 `Problem Details`、SSE、NDJSON、cursor pagination、webhook helper
-- 处理上传、下载、导出、图片处理、脱敏、WebSocket
-- 处理静态资源、SPA、ZIP、嵌入式前端交付
-- 配探针、OpenAPI、Swagger、默认错误模型、OTel
-- 为该框架编写模板、文档、示例或排查集成问题
+1. **先读后写**
+   - 先读 `go.mod`、入口、相关源码、近邻测试、当前 docs。
+   - 用 `rg`、`go doc`、聚焦文件读取定位事实；不要凭记忆改公共 API。
+2. **选择 lane**
+   - Gin 迁移 / 新服务：从 `references/quickstart.md` 开始。
+   - Engine / Router / Context：从对应 reference 开始，再查 live code。
+   - auth / cache / middleware / static / streaming / Swagger：只读对应专项 reference。
+   - 上游兼容或公共 API：进入本仓维护门禁，先查兼容文档与 `gincompat`。
+3. **保持契约**
+   - 与上游 `github.com/gin-gonic/gin` 同名 API 优先保持上游调用形态。
+   - Darkit 增强能力用显式扩展入口承载，不抢占上游语义。
+   - 导出符号必须有准确 Go doc；公共行为变化必须同步 docs 和模板。
+4. **最小落刀**
+   - 行为修复与重构分离。
+   - 不引入未要求的新依赖。
+   - 安全路径、上传、静态资源等敏感逻辑优先复用仓内已有 helper。
+5. **验证闭环**
+   - 先跑最小相关测试，再按影响面升级验证。
+   - 改公共 API、示例或 docs 时，同时更新 `docs/darkit-gin/` 下 references/assets。
 
-## 最小心智模型
+## 任务路由表
 
-先记住 6 块：
+| 任务 | 先读 | 可复用模板 / 继续查 |
+| --- | --- | --- |
+| 3-5 分钟跑通服务 | `references/quickstart.md` | `assets/examples/basic_server.go.tmpl` |
+| 从 `gin-gonic/gin` 迁移 | `references/quickstart.md`、`references/context-cheatsheet.md` | `docs/gin-upstream-compat.md` |
+| Engine 配置、生命周期、provider | `references/engine-options.md` | `engine.go`、`options.go` |
+| 路由分组、资源路由、regex、AutoRegister | `references/router-patterns.md` | `router.go`、`regex_router.go`、`auto_register.go` |
+| Context、参数、响应、上传下载 | `references/context-cheatsheet.md` | `context*.go`、`upload.go`、相关 tests |
+| Auth / session / permission | `references/auth-integration.md` | `auth/README.md`、`auth/DESIGN.md` |
+| Cache / storage / idempotency | `references/cache-storage-integration.md` | `pkg/cache`、`pkg/storage`、`middleware/cache.go` |
+| Middleware 组合 | `references/middleware-catalog.md` | `middleware/README.md`、`middleware/` |
+| Problem / SSE / NDJSON / webhook / probes / OpenAPI | `references/feature-recipes.md` | `examples/streaming`、`examples/probes`、`pkg/swagger` |
+| 静态资源 / SPA / ZIP / embed | `references/static-site-recipes.md` | `docs/static-design.md`、`pkg/static`、`engine_static.go` |
+| 能力盘点与误用排查 | `references/capability-inventory.md` | `docs/api-reference.md`、`README.md` |
+| 应用侧排障 | `references/troubleshooting.md` | 失败日志、请求复现、调用方测试 |
+| 本仓结构与文档地图 | `references/repo-doc-map.md` | `DESIGN.md`、`internal/DESIGN.md` |
 
-1. `Engine`：服务入口、Option、provider、生命周期
-2. `Router`：路由注册、分组、regex、静态挂载、OpenAPI 路由文档
-3. `Context`：参数、绑定、响应、文件、导出、认证、流式能力
-4. `auth/`：登录、权限、session、token
-5. `middleware/`：请求治理、安全、观测、流量控制
-6. `pkg/*`：static、swagger、cache、routes、mail、sms 等能力
+## 应用接入模式
 
-## 先读什么
+默认保持调用方项目结构，按三种接入强度选一条：
 
-### 通用起步
+- **Gin-compatible mode**：尽量沿用上游 Gin 写法，只把 import 切到 `gin "github.com/darkit/gin"`。
+- **Enhanced mode**：使用 `gin.New/Default`、`Router()`、增强 `Context`、标准响应、regex、auto-register。
+- **Infrastructure mode**：接入 auth、cache/storage、middleware、static、Swagger、probes 等生产能力。
 
-优先只读：
+交付应用侧改动时给出：改动文件、核心代码、配置项、验证命令、最小 `curl` / `httptest`、生产风险点。
 
-- `./references/capability-inventory.md`
-- `./references/quickstart.md`
-- `./references/context-cheatsheet.md`
+## 本仓维护模式
 
-### 任务路由
+确认当前 module 是 `github.com/darkit/gin` 后，再使用仓内维护门禁。
 
-| 任务 | 先读这些 |
-| --- | --- |
-| 先判断框架有哪些真实能力 | `./references/capability-inventory.md` |
-| 最小服务 / 标准 API | `./references/quickstart.md` |
-| `Engine` 初始化、Option、provider 注入 | `./references/engine-options.md` |
-| `Context` 高频用法 | `./references/context-cheatsheet.md` |
-| 路由、版本化、自动注册、regex | `./references/router-patterns.md` |
-| 认证登录流 | `./references/auth-integration.md` |
-| 中间件与 OTel | `./references/middleware-catalog.md` |
-| Problem Details / SSE / NDJSON / webhook / cursor pagination / probes / OpenAPI | `./references/feature-recipes.md` |
-| 上传 / 下载 / 导出 / 图片 / 脱敏 / WebSocket | `./references/context-cheatsheet.md` + `./references/feature-recipes.md` |
-| 静态资源 / SPA / ZIP / embed | `./references/static-site-recipes.md` |
-| 排障 | `./references/troubleshooting.md` |
-| 需要进入本仓细节文档 | `./references/repo-doc-map.md` |
+### 公共 API 兼容规则
 
-### 配套模板
+- `Context.Param`、`Query`、`PostForm`、`DefaultQuery`、`DefaultPostForm` 保持上游单一来源语义。
+- 聚合读取使用 `Input(...)`；`ParamInt` 等增强 helper 基于聚合输入解析。
+- `Context.Error(err error) *gin.Error` 保持上游错误收集语义；统一错误响应使用 `ErrorResponse(...)`、`Problem(...)` 或 typed helpers。
+- `Negotiate(code, gin.Negotiate)` 保持上游语义；自动协商使用 `AutoNegotiate(...)`。
+- `Use(...)`、`GET(...)`、`Group(...)`、`Static*` 保持 Gin-like 调用形态；混合中间件签名使用 `UseAny(...)`。
+- Wrapper 类型身份可不同，但参数、返回值、使用方式必须是有意映射，并在兼容文档中说明。
 
-- `./assets/examples/basic_server.go.tmpl`
-- `./assets/examples/auth_flow.go.tmpl`
-- `./assets/examples/middleware_chain.go.tmpl`
-- `./assets/examples/file_upload_download.go.tmpl`
-- `./assets/examples/export_excel_csv.go.tmpl`
-- `./assets/examples/auto_register_routes.go.tmpl`
-- `./assets/examples/streaming_webhook.go.tmpl`
-- `./assets/examples/static_site.go.tmpl`
-- `./assets/examples/full_featured.go.tmpl`
+### 上传安全规则
 
-## 当前必须遵守的语义边界
+- `ToDir(...)`：上传根目录。
+- `ToSubDir(...)`：安全相对子目录。
+- `AsName(...)`：纯文件名。
+- `NameBy(...)`：批量上传逐文件命名。
+- 复用 `internal/pathutil.SafePath(...)`，不要另造目录穿越校验。
+- `SaveFiles(...)` 必须先规划全部目标，再以 `ErrDuplicateUploadTarget` 拒绝重复解析目标。
+- `UploadResult.RelativePath` 是相对上传根目录、slash-normalized 的应用侧稳定路径。
 
-这些点最容易受旧文档或上游 Gin 心智影响，回答和实现时必须按当前项目代码处理：
+## 验证门禁
 
-- `Param(key)` 只读路径参数；聚合读取请用 `Input(key, def...)`
-- `ParamInt` / `ParamBool` 等增强 helper 实际也是基于 `Input(...)`
-- `Error(...)` 是上游 Gin 错误收集语义；统一错误响应请用 `ErrorResponse(...)` 或 `Problem(...)`
-- `Negotiate(code, config)` 保持上游兼容；项目增强自动协商请用 `AutoNegotiate(...)`
-- `Use(...)` 只接增强 `HandlerFunc`
-- 需要混用 `gin.HandlerFunc`、标准 `http` middleware 时，用 `UseAny(...)`
-- `Static*` / `Embed*` 是直接路由注册
-- `Assets*` / `Site*` / `FallbackSite*` 是通过 `NoRoute` 受控兜底，不应描述成普通 catch-all 路由
-- `GET(...).Doc(...)` 不再是推荐链路，使用 `GETDoc/POSTDoc/...`
+按影响面选择，公共 API / 行为变更默认跑全：
 
-## 读取策略
+```bash
+gofmt -w <changed-go-files>
+go test -count=1 ./...
+go test -race -count=1 ./...
+go vet ./...
+git diff --check
+```
 
-### 第一层：Skill 内 references
+上游兼容工作追加：
 
-先看 Skill 内文件，不要一次性把整个仓库文档都塞进上下文。
+```bash
+GOWORK=off go run ./internal/tools/gincompat -format markdown
+GOWORK=off go run ./internal/tools/gincompat -format json
+```
 
-### 第二层：模板优先
+兼容门禁关注：根包 / 子包 `missing == 0`，核心方法 `upstream_only == 0`，`incompatible == 0`；新增映射必须同步 `internal/tools/gincompat`、契约测试和 `docs/gin-upstream-compat.md`。
 
-如果任务属于常见接入场景，优先从 `assets/examples/*.tmpl` 复制改写。
+## 文档同步面
 
-### 第三层：live code
+公共用法或 API 变化时，同步检查：
 
-需要确认真实签名、返回值、行为边界时，在当前 workspace 搜索：
+- `README.md`
+- `docs/usage.md`
+- `docs/api-reference.md`
+- `docs/gin-upstream-compat.md`
+- `docs/extension-compat-mapping.md`
+- `docs/darkit-gin/references/*.md`
+- `docs/darkit-gin/assets/examples/*.tmpl`
 
-- `engine.go`
-- `router.go`
-- `router_static_ext.go`
-- `router_probes.go`
-- `context*.go`
-- `options.go`
-- `auto_register.go`
-- `regex_router.go`
-- `middleware/`
-- `pkg/static/`
-- `pkg/swagger/`
-- `examples/`
-
-### 第四层：repo 文档
-
-只有在你确认当前 workspace 就是 `github.com/darkit/gin` 本仓时，再读：
-
-- `./references/repo-doc-map.md`
-
-## 回答与实现风格
-
-- 先给接入方能直接使用的结论
-- 再补最小必要解释
-- 优先给“推荐写法”，其次才是“兼容旧写法”
-- 如果某处旧语义已经回收给上游 Gin，要明确指出替代入口
-- 如果示例有多种可能，默认给更简单、更稳、更贴近当前项目推荐路径的一种
+上传 API 变化尤其要同步 `references/context-cheatsheet.md` 与 `assets/examples/file_upload_download.go.tmpl`。

@@ -13,8 +13,8 @@
 
 1. 先判断问题落在哪层：Engine / Router / Context / auth / middleware / static / swagger
 2. 再确认是不是用了过期写法或错误入口
-3. 然后搜索 live code 与测试
-4. 若当前 workspace 就是 gin 本仓，再进入 `repo-doc-map.md`
+3. 然后搜索调用方项目自己的入口、路由、配置与测试
+4. 只有当前 workspace 是 `github.com/darkit/gin` 本仓时，才进入 `repo-doc-map.md` 和框架 live code
 
 ## 高频问题
 
@@ -116,7 +116,22 @@
 
 - `./auth-integration.md`
 
-### 8. 探针 / webhook / 流式行为不对
+### 8. cache / storage 行为不对
+
+优先检查：
+
+- `WithCache(...)` 传入实例是否被 Engine 接管，是否在 `Shutdown` 后继续使用
+- 是否把只实现最小 KV 的 Fiber storage 后端当成完整 auth/session 存储
+- 响应缓存是否因为 `Authorization`、`Cookie`、`Set-Cookie`、`Cache-Control: private/no-store/no-cache` 被安全跳过
+- `WithCacheVary(...)` 是否正确配置了内容协商 Header
+- 幂等接口是否缺少 `WithIdempotentNamespaceFunc(...)` 做租户/主体隔离
+
+先读：
+
+- `./cache-storage-integration.md`
+- `./middleware-catalog.md`
+
+### 9. 探针 / webhook / 流式行为不对
 
 优先检查：
 
@@ -138,6 +153,11 @@
 - `router_static_ext.go`
 - `router_probes.go`
 - `context*.go`
+- `pkg/cache/`
+- `pkg/storage/`
+- `auth/storage/kv/`
+- `middleware/cache.go`
+- `middleware/idempotent.go`
 - `pkg/static/`
 - `examples/streaming/main.go`
 - `examples/probes/main.go`
@@ -150,5 +170,7 @@
 - 上游兼容入口
 - 项目增强入口
 - 旧增强入口的迁移点
+- 生命周期托管边界
+- 安全默认值主动跳过
 
 很多问题的根源其实不是实现 bug，而是入口用错了。

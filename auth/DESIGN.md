@@ -49,6 +49,10 @@
 ├── security.NonceManager
 ├── security.RefreshTokenManager
 ├── oauth2.OAuth2Server
+├── security.ApiKeyManager
+├── security.SignTemplate
+├── security.TempTokenManager
+├── security.SameTokenTemplate
 └── listener.Manager
 
 持久化层
@@ -63,7 +67,7 @@
 
 这是应用程序代码进入认证系统的方式：
 
-- `gin.WithAuth(...)` 在引擎设置期间创建管理器
+- `gin.WithAuth(...)` 在引擎设置期间保存并校验配置，管理器在运行阶段创建
 - `c.Auth()` 创建请求作用域的 `AuthContext`
 - 全局函数包装进程级管理器
 - `StpLogic` 为每个认证域包装专用管理器
@@ -100,6 +104,10 @@
 - `NonceManager` 用于防重放一次性值
 - `RefreshTokenManager` 用于访问令牌轮换
 - `OAuth2Server` 用于授权码和令牌流
+- `ApiKeyManager` 用于开放接口密钥管理
+- `SignTemplate` 用于带时间戳 / nonce 的签名校验
+- `TempTokenManager` 用于一次性短期令牌
+- `SameTokenTemplate` 用于服务间调用令牌
 - `listener.Manager` 用于事件钩子
 
 #### 5. 持久化层
@@ -140,6 +148,29 @@
 - `TokenStyleHash`
 - `TokenStyleTimestamp`
 - `TokenStyleTik`
+
+## RememberMe 与 Token-Session
+
+上游同步后，运行时把“登录态本身”和“Token-Session 容器”拆成两个层次：
+
+- 普通 `Login(...)` 走标准 `Timeout`
+- `LoginRememberMe(...)` 走 `RememberMeTimeout`
+- `GetTokenSession(token, isCreate)` 为访问令牌绑定独立 Session 容器
+- `TokenSessionCheckLogin` 控制创建 Token-Session 时是否强制校验登录态
+
+这样可以把“长期登录”、“匿名会话”和“令牌附加上下文”拆开建模，而不把所有状态都挤进用户 Session。
+
+## OAuth2 存储兼容策略
+
+本项目在同步 upstream `0.2.2` 核心能力的同时，保留了本地已验证的 OAuth2 存储增强：
+
+- `Client`、`AuthorizationCode`、`AccessToken` 都支持二进制编解码
+- 客户端元数据与授权码 / token 一样走统一存储后端，不依赖进程内 map
+- 授权码消费是一次性的
+- refresh 成功后会轮换旧 refresh token，避免重复消费
+- 若底层后端提供原子 `SetNX`，OAuth2 并发关键路径优先使用后端锁
+
+这套设计保证 memory、redis 与通用 KV 适配器在 OAuth2 语义上尽量一致，避免“单机可用、换后端就失真”的漂移。
 
 ### 策略选择
 
@@ -453,6 +484,18 @@ Redis 后端为分布式状态而设计：
 - 使用 `SCAN` 进行键模式枚举
 - 支持 `SET ... KeepTTL`
 - 使用每操作超时
+
+### 通用 KV 适配层
+
+`auth/storage/kv` 负责把 `pkg/storage.Store` 适配为 `adapter.Storage`。
+
+设计边界：
+
+- `NewStrict` 在构造期要求 `storage.TTLStore` 与 `storage.KeyScanner`
+- `NewRelaxed` 只用于测试或明确不使用完整认证能力的场景
+- `Get` 统一返回 `string`，保持 Manager 对 TokenInfo、Session、OAuth2 payload 的解析语义
+- 空 key 在 auth 边界直接拒绝，避免 Fiber storage 的静默忽略语义进入认证主链
+- 普通适配器不暴露非原子 `SetNX`；只有 `NewAtomic` 包装真正实现 `AtomicStore` 的后端
 
 ### 存储契约考虑
 

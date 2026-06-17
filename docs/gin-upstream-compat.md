@@ -6,7 +6,7 @@
 
 1. 现在是否已经补齐上游根包与公开子包的缺失导出。
 2. 现在是否已经把最影响迁移的同名高频 API 调整回上游签名。
-3. 还剩下哪些无法仅靠表层别名彻底抹平的结构性差异。
+3. 哪些差异属于增强 wrapper 的“显式映射”，而不是缺失或未实现。
 
 ## 本次对齐后的结论
 
@@ -14,6 +14,7 @@
 
 - 上游根包公开名缺失已经清零。
 - 上游公开子包 `binding`、`render`、`codec/json`、`ginS` 已全部可导入。
+- `gincompat` 兼容矩阵已把“缺失 / 已映射 / 本地新增”分开呈现，当前根包方法集已无 `incompatible` / `upstream_only` 项。
 - `Engine` / `Router` / `Context` 上最关键的不兼容高频方法已经回到上游形状：
   - `Context.Param(key string) string`
   - `Context.Error(err error) *gin.Error`
@@ -21,6 +22,7 @@
   - `Context.MustGet(key any) any`
   - `Engine.Use(...HandlerFunc) IRoutes`
   - `Engine/Router.GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Any|Match|Handle`
+  - `Engine/Router.Group`
   - `Static` / `StaticFS` / `StaticFile` / `StaticFileFS`
 - 上游包级函数不再只是 `var` 桥接，而是恢复为真正的 `func` 声明，并返回本项目自己的 `HandlerFunc`。
 
@@ -36,13 +38,15 @@
 
 其中：
 
+- `binding` 已补齐上游公开的 `MIMEBSON`、`BSON`，并将 `Default`、`MapFormWithTag` 恢复为真正的 `func` 声明。
 - `render` 已补齐上游公开的 `BSON` 导出。
+- `render.WriteJSON`、`render.WriteMsgPack`、`render.WriteString` 已恢复为真正的 `func` 声明。
 - `codec/json` 直接补入了上游 codec 包公开面。
 - `ginS` 已提供与上游同名的快捷入口包装。
 
-## 仍然存在的结构性差异
+## 显式映射的结构性差异
 
-虽然高频 API 形状已经大幅收敛，但因为本项目仍然保留“增强包装层”设计，仍有两类差异无法通过简单别名完全抹平：
+虽然高频 API 形状已经大幅收敛，但因为本项目仍然保留“增强包装层”设计，仍有两类差异需要按“映射兼容”理解：
 
 ### 1. 同名核心类型的类型身份仍不同
 
@@ -61,14 +65,17 @@
 - 从“把 import 从上游改成当前模块”这个角度看，高频调用方式已经基本兼容。
 - 但从“二进制/反射层面与上游完全等同”这个角度看，仍不是纯粹的 type alias replacement。
 
-### 2. `Context.Copy` 与 `Context.Handler` 仍保留 wrapper 痕迹
+### 2. 核心方法返回增强 wrapper 类型
 
-兼容扫描目前剩余的根包高风险方法差异主要集中在：
+兼容扫描会把以下方法标为 `mapped`，而不是 `incompatible`：
 
 - `Context.Copy`
 - `Context.Handler`
+- `Engine/Router.Group`
+- `Engine/Router.Use|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Any|Match|Handle|Static*`
 
-根因是当前项目仍然通过增强 `Context` 包装上游 `*gin.Context`，因此这两个方法返回值不可能在保留增强能力的同时与上游底层类型完全同构。
+根因是当前项目仍然通过增强 `Context` / `Engine` / `Router` 包装上游类型。
+这些方法的调用形态与上游一致，但参数或返回值会落在本项目增强类型上，以便继续提供扩展能力。
 
 ## 为兼容性新增的扩展入口
 
@@ -111,13 +118,19 @@ GOWORK=off go run ./internal/tools/gincompat -format markdown
 GOWORK=off go run ./internal/tools/gincompat -format json
 ```
 
-注意：
+### 子包公开面扫描
 
-- 当前 `gincompat` 工具主要扫描根包公开名与方法集。
-- `codec/json`、`ginS` 这类公开子包的存在性需要结合 `go list ./...` 一起核对。
+`gincompat` 当前同时扫描：
+
+- 根包导出符号
+- 根包核心类型方法集
+- `binding`
+- `render`
+- `codec/json`
+- `ginS`
 
 ## 当前判断
 
 如果以“迁移应用源码到 `github.com/darkit/gin` 并保持常见 Gin 用法尽量不改”为目标，当前兼容性已经进入可用状态。
 
-如果目标是“对上游 `github.com/gin-gonic/gin` 做完全 type-identity 级替身”，当前设计仍受增强 wrapper 方案约束，剩余差异主要集中在核心类型身份以及 `Context.Copy/Handler` 这类天然绑定底层类型的方法上。
+如果目标是“对上游 `github.com/gin-gonic/gin` 做完全 type-identity 级替身”，当前设计仍受增强 wrapper 方案约束；这不是缺失实现，而是本项目保留增强能力所需的公开映射边界。

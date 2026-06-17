@@ -1,0 +1,47 @@
+package main
+
+import (
+	"context"
+	"time"
+
+	"github.com/darkit/gin"
+	"github.com/darkit/gin/middleware"
+	"github.com/darkit/gin/pkg/cache"
+)
+
+func main() {
+	app := gin.New(
+		// 应用中可替换为 cache.NewFiberStorage(bbolt.New())、badger.New(...)、etcd.New(...)、s3.New(...)。
+		gin.WithCache(cache.NewMemory(cache.WithMaxEntries(10_000))),
+	)
+
+	// 公共 GET 响应缓存：默认跳过 Authorization/Cookie 与私有响应。
+	app.UseAny(middleware.Cache(time.Minute,
+		middleware.WithCacheControl("public, max-age=60"),
+		middleware.WithCacheVary("Accept-Language", "Accept-Encoding"),
+	))
+
+	// 写接口幂等：默认按 method + path + Idempotency-Key 隔离。
+	app.UseAny(middleware.Idempotent(
+		middleware.WithIdempotentNamespaceFunc(func(c *gin.Context) string {
+			return c.GetHeader("Authorization")
+		}),
+	))
+
+	app.GET("/cache/ping", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		if err := c.Cache().Set(ctx, "ping", []byte("pong"), time.Minute); err != nil {
+			c.InternalError(err.Error())
+			return
+		}
+
+		val, err := c.Cache().Get(context.Background(), "ping")
+		if err != nil {
+			c.InternalError(err.Error())
+			return
+		}
+		c.Success(gin.H{"value": string(val)})
+	})
+
+	_ = app.Run(":8080")
+}
