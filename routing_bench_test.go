@@ -76,7 +76,7 @@ func buildBenchmarkEngine(includeStandard, includeRegex bool) *Engine {
 }
 
 func registerStandardBenchmarkRoutes(engine *Engine) {
-	for i := 0; i < routingBenchmarkRouteFanout; i++ {
+	for i := range routingBenchmarkRouteFanout {
 		engine.GET(fmt.Sprintf("/plain/static/%03d", i), benchmarkNoContent)
 		engine.GET(fmt.Sprintf("/plain/teams/%03d/members/:memberID/projects/:projectID", i), benchmarkNoContent)
 		engine.GET(fmt.Sprintf("/plain/assets/%03d/files/:fileID/revisions/:revisionID", i), benchmarkNoContent)
@@ -86,7 +86,7 @@ func registerStandardBenchmarkRoutes(engine *Engine) {
 }
 
 func registerRegexBenchmarkRoutes(engine *Engine) {
-	for i := 0; i < routingBenchmarkRouteFanout; i++ {
+	for i := range routingBenchmarkRouteFanout {
 		engine.GET(fmt.Sprintf("/regex/fill/%03d/{id:[0-9]+}", i), benchmarkNoContent)
 		engine.GET(
 			fmt.Sprintf("/regex/catalog/%03d/{kind:(?:news|blog|report|analysis)}/{slug:(?:[a-z0-9]+(?:-[a-z0-9]+){1,4})}", i),

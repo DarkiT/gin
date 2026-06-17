@@ -1,6 +1,7 @@
 package gin
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -47,6 +48,74 @@ func TestUpgradeWebSocket(t *testing.T) {
 
 	// 验证连接成功
 	assert.NotNil(t, conn)
+}
+
+func TestUpgradeWebSocket_DefaultRejectsCrossOrigin(t *testing.T) {
+	engine := Default()
+	engine.GET("/ws", func(c *Context) {
+		wsConn, err := c.UpgradeWebSocket("user123")
+		if err == nil {
+			_ = wsConn.Close()
+		}
+	})
+
+	server := httptest.NewServer(engine)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	header := http.Header{}
+	header.Set("Origin", "https://evil.example")
+	conn, resp, err := ws.DefaultDialer.Dial(wsURL, header)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestWebSocket_WriteWhileReadBlocked(t *testing.T) {
+	engine := Default()
+	writeDone := make(chan error, 1)
+
+	engine.GET("/ws", func(c *Context) {
+		wsConn, err := c.UpgradeWebSocket("user123")
+		require.NoError(t, err)
+		defer func() {
+			if closeErr := wsConn.Close(); closeErr != nil {
+				t.Errorf("close ws connection: %v", closeErr)
+			}
+		}()
+
+		readStarted := make(chan struct{})
+		go func() {
+			close(readStarted)
+			_, _, _ = wsConn.Read()
+		}()
+		<-readStarted
+		time.Sleep(50 * time.Millisecond)
+
+		writeDone <- wsConn.WriteText("server-ready")
+	})
+
+	server := httptest.NewServer(engine)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("close client connection: %v", closeErr)
+		}
+	}()
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	messageType, data, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, ws.TextMessage, messageType)
+	assert.Equal(t, "server-ready", string(data))
+	require.NoError(t, <-writeDone)
 }
 
 // TestWebSocket_ReadWrite 测试读写消息

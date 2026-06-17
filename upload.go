@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 
+	"github.com/darkit/gin/internal/pathutil"
 	"github.com/google/uuid"
 )
 
@@ -48,6 +50,7 @@ type UploadResult struct {
 	OriginalName string `json:"original_name"` // 原始文件名
 	SavedName    string `json:"saved_name"`    // 保存后的文件名
 	Path         string `json:"path"`          // 完整保存路径
+	RelativePath string `json:"relative_path"` // 相对上传根目录的路径
 	Size         int64  `json:"size"`          // 文件大小（字节）
 	Ext          string `json:"ext"`           // 扩展名（不含点）
 	MimeType     string `json:"mime_type"`     // MIME 类型
@@ -59,15 +62,25 @@ type UploadOption func(*uploadOptions)
 // uploadOptions 内部选项结构
 type uploadOptions struct {
 	dir      string   // 覆盖上传目录
+	subDir   string   // 在上传目录下追加的安全子目录
 	maxSize  int64    // 覆盖最大大小限制
 	exts     []string // 覆盖允许的扩展名
 	filename string   // 指定保存文件名（含扩展名）
+	nameFunc func(original string) string
 }
 
 // ToDir 指定上传目录（覆盖默认）。
 func ToDir(dir string) UploadOption {
 	return func(o *uploadOptions) {
 		o.dir = dir
+	}
+}
+
+// ToSubDir 指定上传子目录（相对于上传根目录）。
+// 仅允许相对路径，禁止绝对路径、盘符路径与 ".." 目录穿越。
+func ToSubDir(subDir string) UploadOption {
+	return func(o *uploadOptions) {
+		o.subDir = subDir
 	}
 }
 
@@ -86,9 +99,20 @@ func AllowExts(exts ...string) UploadOption {
 }
 
 // AsName 指定保存文件名（不含路径，含扩展名）。
+// 如需按目录分类保存，请配合 ToSubDir(...) 显式指定子目录。
 func AsName(name string) UploadOption {
 	return func(o *uploadOptions) {
+		o.nameFunc = nil
 		o.filename = name
+	}
+}
+
+// NameBy 指定本次上传的文件名生成函数。
+// 适合批量上传等需要按原始文件名动态生成唯一目标名的场景。
+func NameBy(fn func(original string) string) UploadOption {
+	return func(o *uploadOptions) {
+		o.filename = ""
+		o.nameFunc = fn
 	}
 }
 
@@ -105,6 +129,15 @@ var (
 
 	// ErrCreateUploadDir 表示创建上传目录失败。
 	ErrCreateUploadDir = errors.New("创建上传目录失败")
+
+	// ErrInvalidUploadName 表示保存文件名非法。
+	ErrInvalidUploadName = errors.New("非法的保存文件名")
+
+	// ErrInvalidUploadSubDir 表示上传子目录非法。
+	ErrInvalidUploadSubDir = errors.New("非法的上传子目录")
+
+	// ErrDuplicateUploadTarget 表示批量上传时目标文件路径冲突。
+	ErrDuplicateUploadTarget = errors.New("批量上传目标文件冲突")
 )
 
 // defaultFileNameFunc 默认文件名生成器（UUID + 原扩展名）。
@@ -148,4 +181,53 @@ func validateFileExt(filename string, allowedExts []string) error {
 		return fmt.Errorf("%w: %s", ErrFileExtNotAllowed, normalizeExt(ext))
 	}
 	return nil
+}
+
+// validateUploadName 验证最终保存文件名，防止绝对路径与目录穿越。
+func validateUploadName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ErrInvalidUploadName
+	}
+	if strings.ContainsRune(trimmed, 0) {
+		return ErrInvalidUploadName
+	}
+	if filepath.IsAbs(trimmed) || isWindowsDriveLikePath(trimmed) {
+		return ErrInvalidUploadName
+	}
+	if strings.ContainsAny(trimmed, `/\`) {
+		return ErrInvalidUploadName
+	}
+	cleaned := filepath.Clean(trimmed)
+	if cleaned == "." || cleaned == ".." || cleaned != trimmed {
+		return ErrInvalidUploadName
+	}
+	return nil
+}
+
+func isWindowsDriveLikePath(name string) bool {
+	return len(name) >= 2 && name[1] == ':' && unicode.IsLetter(rune(name[0]))
+}
+
+// resolveUploadDir 解析最终上传目录，允许在基础目录下显式追加安全子目录。
+func resolveUploadDir(baseDir, subDir string) (string, error) {
+	base := strings.TrimSpace(baseDir)
+	if base == "" {
+		return "", ErrCreateUploadDir
+	}
+
+	base = filepath.Clean(base)
+	trimmedSubDir := strings.TrimSpace(subDir)
+	if trimmedSubDir == "" {
+		return base, nil
+	}
+	if strings.ContainsRune(trimmedSubDir, 0) {
+		return "", ErrInvalidUploadSubDir
+	}
+
+	resolved, err := pathutil.SafePath(base, trimmedSubDir)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidUploadSubDir, trimmedSubDir)
+	}
+	return resolved, nil
 }

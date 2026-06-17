@@ -52,6 +52,13 @@ func WithGracefulShutdown(timeout time.Duration) OptionFunc {
 	}
 }
 
+// WithStartupTimeout 设置受管资源启动超时。
+func WithStartupTimeout(timeout time.Duration) OptionFunc {
+	return func(e *Engine) {
+		e.startupTimeout = timeout
+	}
+}
+
 // WithLogger 设置日志器。
 func WithLogger(l logger.Logger) OptionFunc {
 	return func(e *Engine) {
@@ -62,7 +69,7 @@ func WithLogger(l logger.Logger) OptionFunc {
 // WithCache 设置缓存实现。
 func WithCache(c cache.Cache) OptionFunc {
 	return func(e *Engine) {
-		e.cache = c
+		setEngineCache(e, c)
 	}
 }
 
@@ -126,21 +133,23 @@ func WithUploadConfig(cfg *UploadConfig) OptionFunc {
 	}
 }
 
-// WithMail 设置邮件配置并初始化默认发送器。
+// WithMail 设置 Engine 作用域邮件配置，并在构造阶段执行配置校验。
+// 真正的 Mailer 实例会在运行阶段由受管资源协调器创建和关闭。
 func WithMail(cfg mail.MailConfig) OptionFunc {
 	return func(e *Engine) {
 		e.mailConfig = cfg
-		if err := mail.InitDefaultMailer(cfg); err != nil {
+		if _, err := mail.NewMailer(cfg); err != nil {
 			panic(err)
 		}
 	}
 }
 
-// WithSMS 设置短信配置并初始化默认提供者。
+// WithSMS 设置 Engine 作用域短信配置，并在构造阶段执行配置校验。
+// 真正的短信服务实例会在运行阶段由受管资源协调器创建和关闭。
 func WithSMS(cfg sms.SMSConfig) OptionFunc {
 	return func(e *Engine) {
 		e.smsConfig = cfg
-		if err := sms.InitDefaultProvider(cfg); err != nil {
+		if err := sms.ValidateConfig(cfg); err != nil {
 			panic(err)
 		}
 	}
@@ -156,7 +165,8 @@ func EnableSwagger(cfg swagger.SwaggerConfig) OptionFunc {
 	}
 }
 
-// WithAuth 配置认证授权模块并初始化管理器。
+// WithAuth 配置认证授权模块，并在构造阶段保存和校验认证配置。
+// 真正的认证管理器会在运行阶段由受管资源协调器创建和关闭。
 // 启用后可通过 c.Auth() 访问认证功能
 //
 // 使用示例:
@@ -177,15 +187,5 @@ func WithAuth(cfg auth.AuthConfig) OptionFunc {
 
 		// 保存配置
 		e.authConfig = &cfg
-
-		// 创建存储
-		storage := cfg.Storage
-		if storage == nil {
-			// 默认使用内存存储
-			storage = auth.NewMemoryStorage()
-		}
-
-		// 创建认证管理器
-		e.authManager = auth.NewManager(storage, &cfg)
 	}
 }
