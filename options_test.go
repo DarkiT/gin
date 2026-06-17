@@ -2,6 +2,7 @@ package gin_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -41,12 +42,16 @@ func TestOptionsSetters(t *testing.T) {
 	}
 	engine.WithGracefulShutdown(5 * time.Second)(e)
 	_ = e // only verify not panic; state is not a timer
+	engine.WithStartupTimeout(6 * time.Second)(e)
+	if readStartupTimeout(e) != 6*time.Second {
+		t.Fatalf("startup timeout not set")
+	}
 	l := testLogger{}
 	engine.WithLogger(l)(e)
 	if readLogger(e) == nil {
 		t.Fatalf("logger not set")
 	}
-	c := cache.NewMemoryCache()
+	c := cache.NewMemory()
 	engine.WithCache(c)(e)
 	if readCache(e) == nil {
 		t.Fatalf("cache not set")
@@ -94,6 +99,38 @@ func TestWithSMSPanicOnInvalidConfig(t *testing.T) {
 	})
 }
 
+func TestWithSMSValidatesWithoutCreatingService(t *testing.T) {
+	called := false
+	sms.RegisterProvider("options-no-side-effect", func(cfg sms.SMSConfig) (sms.SMSProvider, error) {
+		called = true
+		return nil, errors.New("provider factory should not run during option apply")
+	})
+
+	e := engine.New()
+	engine.WithSMS(sms.SMSConfig{
+		Provider:  "options-no-side-effect",
+		AccessKey: "key",
+		SecretKey: "secret",
+		SignName:  "sign",
+	})(e)
+
+	if called {
+		t.Fatalf("WithSMS should validate config without creating provider")
+	}
+}
+
+func TestWithSMSTencentRequiresAppID(t *testing.T) {
+	e := engine.New()
+	assertPanics(t, func() {
+		engine.WithSMS(sms.SMSConfig{
+			Provider:  "tencent",
+			AccessKey: "key",
+			SecretKey: "secret",
+			SignName:  "sign",
+		})(e)
+	})
+}
+
 func assertPanics(t *testing.T, fn func()) {
 	t.Helper()
 	defer func() {
@@ -122,4 +159,19 @@ func readCache(e *engine.Engine) cache.Cache {
 func readMailConfig(e *engine.Engine) mail.MailConfig {
 	field := reflect.ValueOf(e).Elem().FieldByName("mailConfig")
 	return *(*mail.MailConfig)(unsafe.Pointer(field.UnsafeAddr()))
+}
+
+func readStartupTimeout(e *engine.Engine) time.Duration {
+	field := reflect.ValueOf(e).Elem().FieldByName("startupTimeout")
+	return *(*time.Duration)(unsafe.Pointer(field.UnsafeAddr()))
+}
+
+func TestWithCachePanicsOnNil(t *testing.T) {
+	e := engine.New()
+	assertPanics(t, func() {
+		engine.WithCache(nil)(e)
+	})
+	assertPanics(t, func() {
+		e.WithCache(nil)
+	})
 }
