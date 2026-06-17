@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,10 +38,7 @@ func RandomString(length int) string {
 	}
 
 	// Calculate required byte length (base64 expands by ~33%)
-	byteLen := (length * 3) / 4
-	if byteLen < length {
-		byteLen = length
-	}
+	byteLen := max((length*3)/4, length)
 
 	bytes := make([]byte, byteLen)
 	if _, err := rand.Read(bytes); err != nil {
@@ -66,7 +64,7 @@ func RandomNumericString(length int) string {
 	result := make([]byte, length)
 	max := big.NewInt(int64(len(digits)))
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		n, err := rand.Int(rand.Reader, max)
 		if err != nil {
 			return ""
@@ -87,7 +85,7 @@ func RandomAlphanumeric(length int) string {
 	result := make([]byte, length)
 	max := big.NewInt(int64(len(chars)))
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		n, err := rand.Int(rand.Reader, max)
 		if err != nil {
 			return ""
@@ -118,12 +116,7 @@ func DefaultString(s, defaultValue string) string {
 
 // ContainsString checks if string slice contains item | 检查字符串数组是否包含指定字符串
 func ContainsString(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, item)
 }
 
 // RemoveString removes item from string slice | 从字符串数组中移除指定字符串
@@ -568,12 +561,7 @@ func HasLength(s string, min, max int) bool {
 
 // InSlice Checks if value exists in slice | 检查值是否存在于切片中
 func InSlice[T comparable](slice []T, val T) bool {
-	for _, item := range slice {
-		if item == val {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, val)
 }
 
 // UniqueSlice Removes duplicates from slice | 去除切片中的重复元素

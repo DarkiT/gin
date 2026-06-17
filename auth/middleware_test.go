@@ -239,7 +239,8 @@ func TestMiddlewareChain(t *testing.T) {
 	r, mgr := setupTestEngine()
 
 	// 链式使用多个中间件
-	r.GET("/secure-resource",
+	r.GET(
+		"/secure-resource",
 		AuthRequired(mgr),
 		RoleRequired(mgr, "admin"),
 		PermRequired(mgr, "resource:access"),

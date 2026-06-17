@@ -9,36 +9,100 @@ import (
 	"github.com/darkit/gin/auth/core/adapter"
 )
 
-// Constants for session keys | Session键常量
-const (
-	SessionKeyPrefix = "session:" // Storage key prefix | 存储键前缀
-)
-
-// Error variables | 错误变量
+// Error variables (session cannot import root core: import cycle via core/satoken → manager → session)
+// 错误变量（session 不能导入根 core：core/satoken → manager → session 会循环依赖）
 var (
-	ErrSessionNotFound    = fmt.Errorf("session not found")
-	ErrInvalidSessionData = fmt.Errorf("invalid session data")
+	ErrSessionNotFound    = fmt.Errorf("session not found: the session may have expired or been deleted")
+	ErrInvalidSessionData = fmt.Errorf("invalid session data: stored payload is malformed")
 )
 
-// Session Session object for storing user data | 会话对象，用于存储用户数据
+// Session stores user data for Account-Session, Token-Session, or Custom-Session | 会话对象
 type Session struct {
-	ID         string          `json:"id"`         // Session ID | Session标识
-	CreateTime int64           `json:"createTime"` // Creation time | 创建时间
-	Data       map[string]any  `json:"data"`       // Session data | 数据
-	mu         sync.RWMutex    `json:"-"`          // Read-write lock | 读写锁
-	storage    adapter.Storage `json:"-"`          // Storage backend | 存储
-	prefix     string          `json:"-"`          // Key prefix | 键前缀
+	ID         string          `json:"id"`
+	Type       string          `json:"type,omitempty"`
+	LoginType  string          `json:"loginType,omitempty"`
+	LoginID    string          `json:"loginId,omitempty"`
+	Token      string          `json:"token,omitempty"`
+	CreateTime int64           `json:"createTime"`
+	Data       map[string]any  `json:"data"`
+	mu         sync.RWMutex    `json:"-"`
+	storage    adapter.Storage `json:"-"`
+	prefix     string          `json:"-"`
+	keyPrefix  string          `json:"-"` // not persisted; derived on load | 存储前缀（不落库，加载时推导）
 }
 
-// NewSession Creates a new session | 创建新的Session
+// NewSession creates an Account-Session keyed by loginId | 创建账号会话
 func NewSession(id string, storage adapter.Storage, prefix string) *Session {
 	return &Session{
 		ID:         id,
+		Type:       TypeAccount,
+		LoginID:    id,
 		CreateTime: time.Now().Unix(),
 		Data:       make(map[string]any),
 		storage:    storage,
 		prefix:     prefix,
+		keyPrefix:  AccountSessionKeyPrefix,
 	}
+}
+
+// NewTokenSession creates a Token-Session keyed by token value | 创建 Token 会话
+func NewTokenSession(tokenValue string, storage adapter.Storage, prefix, loginType string) *Session {
+	if loginType == "" {
+		loginType = "login"
+	}
+	return &Session{
+		ID:         tokenValue,
+		Type:       TypeToken,
+		LoginType:  loginType,
+		Token:      tokenValue,
+		CreateTime: time.Now().Unix(),
+		Data:       make(map[string]any),
+		storage:    storage,
+		prefix:     prefix,
+		keyPrefix:  TokenSessionKeyPrefix,
+	}
+}
+
+// NewAnonTokenSession creates an anonymous Token-Session | 创建匿名 Token 会话
+func NewAnonTokenSession(tokenValue string, storage adapter.Storage, prefix, loginType string) *Session {
+	if loginType == "" {
+		loginType = "login"
+	}
+	return &Session{
+		ID:         tokenValue,
+		Type:       TypeAnon,
+		LoginType:  loginType,
+		Token:      tokenValue,
+		CreateTime: time.Now().Unix(),
+		Data:       make(map[string]any),
+		storage:    storage,
+		prefix:     prefix,
+		keyPrefix:  TokenSessionKeyPrefix,
+	}
+}
+
+func (s *Session) normalizeMeta() {
+	if s.keyPrefix == "" {
+		s.keyPrefix = AccountSessionKeyPrefix
+	}
+	if s.Type == "" {
+		switch s.keyPrefix {
+		case TokenSessionKeyPrefix:
+			s.Type = TypeToken
+		case CustomSessionKeyPrefix:
+			s.Type = TypeCustom
+		default:
+			s.Type = TypeAccount
+		}
+	}
+}
+
+// Persist saves the session with optional TTL | 持久化会话
+func (s *Session) Persist(ttl time.Duration) error {
+	if ttl > 0 {
+		return s.saveWithTTL(ttl)
+	}
+	return s.save()
 }
 
 // ============ Data Operations | 数据操作 ============
@@ -210,7 +274,7 @@ func (s *Session) Renew(ttl time.Duration) error {
 func (s *Session) save() error {
 	data, err := json.Marshal(s)
 	if err != nil {
-		return fmt.Errorf("failed to marshal session: %w", err)
+		return fmt.Errorf("%w: %v", ErrInvalidSessionData, err)
 	}
 
 	key := s.getStorageKey()
@@ -221,7 +285,7 @@ func (s *Session) save() error {
 func (s *Session) saveWithTTL(ttl time.Duration) error {
 	data, err := json.Marshal(s)
 	if err != nil {
-		return fmt.Errorf("failed to marshal session: %w", err)
+		return fmt.Errorf("%w: %v", ErrInvalidSessionData, err)
 	}
 
 	key := s.getStorageKey()
@@ -230,7 +294,8 @@ func (s *Session) saveWithTTL(ttl time.Duration) error {
 
 // getStorageKey Gets storage key for this session | 获取Session的存储键
 func (s *Session) getStorageKey() string {
-	return s.prefix + SessionKeyPrefix + s.ID
+	s.normalizeMeta()
+	return s.prefix + s.keyPrefix + s.ID
 }
 
 // ============ Static Methods | 静态方法 ============
@@ -241,9 +306,9 @@ func Load(id string, storage adapter.Storage, prefix string) (*Session, error) {
 		return nil, fmt.Errorf("session id cannot be empty")
 	}
 
-	key := prefix + SessionKeyPrefix + id
+	key := prefix + AccountSessionKeyPrefix + id
 	data, err := storage.Get(key)
-	if err != nil {
+	if err != nil && data != nil {
 		return nil, err
 	}
 	if data == nil {
@@ -273,6 +338,54 @@ func Load(id string, storage adapter.Storage, prefix string) (*Session, error) {
 
 	session.storage = storage
 	session.prefix = prefix
+	session.keyPrefix = AccountSessionKeyPrefix
+	session.normalizeMeta()
+	return &session, nil
+}
+
+// LoadWithKeyPrefix loads a session using an explicit storage namespace | 按前缀加载会话
+func LoadWithKeyPrefix(id string, storage adapter.Storage, prefix, keyPrefix string) (*Session, error) {
+	if id == "" {
+		return nil, fmt.Errorf("session id cannot be empty")
+	}
+	if keyPrefix == "" {
+		keyPrefix = AccountSessionKeyPrefix
+	}
+
+	key := prefix + keyPrefix + id
+	data, err := storage.Get(key)
+	if err != nil && data != nil {
+		return nil, err
+	}
+	if data == nil {
+		// Many backends (e.g. memory) return a typed "not found" error with nil data.
+		// Treat as missing session so callers can use errors.Is(ErrSessionNotFound).
+		// 常见存储在 key 不存在时返回 err+nil data，这里统一映射为 ErrSessionNotFound
+		return nil, ErrSessionNotFound
+	}
+
+	var (
+		raw     []byte
+		session Session
+	)
+
+	switch v := data.(type) {
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = v
+	default:
+		return nil, ErrInvalidSessionData
+	}
+
+	if err := json.Unmarshal(raw, &session); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidSessionData, err)
+	}
+
+	session.storage = storage
+	session.prefix = prefix
+	session.keyPrefix = keyPrefix
+	session.normalizeMeta()
 	return &session, nil
 }
 

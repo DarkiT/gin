@@ -271,7 +271,7 @@ func (m *RenewPoolManager) spawnWorkers(count int, waitReady bool) {
 		ready = make(chan struct{}, count)
 	}
 
-	for i := 0; i < count; i++ {
+	for range count {
 		atomic.AddInt32(&m.workers, 1)
 		m.wg.Add(1)
 		go m.worker(ready)
@@ -281,7 +281,7 @@ func (m *RenewPoolManager) spawnWorkers(count int, waitReady bool) {
 		return
 	}
 
-	for i := 0; i < count; i++ {
+	for range count {
 		<-ready
 	}
 }

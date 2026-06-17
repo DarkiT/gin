@@ -44,7 +44,7 @@ type NonceManager struct {
 }
 
 // NewNonceManager Creates a new nonce manager | 创建新的Nonce管理器
-// prefix: key prefix (e.g., "satoken:" or "" for Java compatibility) | 键前缀（如："satoken:" 或 "" 兼容Java）
+// prefix: Redis key namespace (e.g. "satoken:" or "" for bare keys) | 键前缀（如 "satoken:" 或空前缀）
 // ttl: time to live, default 5 minutes | 过期时间，默认5分钟
 func NewNonceManager(storage adapter.Storage, prefix string, ttl time.Duration) *NonceManager {
 	if ttl == 0 {
@@ -76,23 +76,25 @@ func (nm *NonceManager) Generate() (string, error) {
 
 // Verify Verifies nonce and consumes it (one-time use) | 验证nonce并消费它（一次性使用）
 // Returns false if nonce doesn't exist or already used | 如果nonce不存在或已使用则返回false
+//
+// 防重放原子性：用 "used" 标记位的首次占用语义收紧「先 Exists 再 Delete」的 TOCTOU 窗口。
+// storage 支持 SetNX（memory/kv）时多实例同样安全；其余后端降级为进程内互斥（仅单实例安全）。
 func (nm *NonceManager) Verify(nonce string) bool {
 	if nonce == "" {
 		return false
 	}
 
+	// used 标记首次占用：同一 nonce 并发 Verify 时只有一方能首次占用成功，另一方被拒。
+	if !reserveOnce(nm.storage, &nm.mu, nm.getNonceUsedKey(nonce), nm.ttl) {
+		return false
+	}
+
+	// 合法性校验：该 nonce 必须曾被 Generate 签发过。
 	key := nm.getNonceKey(nonce)
-
-	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
 	if !nm.storage.Exists(key) {
 		return false
 	}
-
-	if err := nm.storage.Delete(key); err != nil {
-		return false
-	}
+	nm.storage.Delete(key)
 	return true
 }
 
@@ -121,4 +123,9 @@ func (nm *NonceManager) IsValid(nonce string) bool {
 // getNonceKey Gets storage key for nonce | 获取nonce的存储键
 func (nm *NonceManager) getNonceKey(nonce string) string {
 	return nm.keyPrefix + NonceKeySuffix + nonce
+}
+
+// getNonceUsedKey Gets storage key for the one-time "used" marker | 获取nonce一次性占用标记的存储键
+func (nm *NonceManager) getNonceUsedKey(nonce string) string {
+	return nm.keyPrefix + NonceKeySuffix + "used:" + nonce
 }

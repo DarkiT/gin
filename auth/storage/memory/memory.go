@@ -125,26 +125,23 @@ func (s *Storage) Get(key string) (any, error) {
 	now := time.Now().Unix()
 
 	s.mu.RLock()
-	entry, exists := s.data[key]
-	var snapshot item
-	if exists {
-		snapshot = *entry
-	}
-	s.mu.RUnlock()
-
+	item, exists := s.data[key]
 	if !exists {
+		s.mu.RUnlock()
 		return nil, ErrKeyNotFound
 	}
 
-	if snapshot.isExpired(now) {
+	expired := item.isExpired(now)
+	value := item.value
+	s.mu.RUnlock()
+
+	if expired {
 		// 异步删除过期项
-		go func() {
-			_ = s.Delete(key)
-		}()
+		go s.Delete(key)
 		return nil, ErrKeyExpired
 	}
 
-	return snapshot.value, nil
+	return value, nil
 }
 
 // Delete 删除键
@@ -163,22 +160,18 @@ func (s *Storage) Exists(key string) bool {
 	now := time.Now().Unix()
 
 	s.mu.RLock()
-	entry, exists := s.data[key]
-	var snapshot item
-	if exists {
-		snapshot = *entry
-	}
-	s.mu.RUnlock()
-
+	item, exists := s.data[key]
 	if !exists {
+		s.mu.RUnlock()
 		return false
 	}
 
-	if snapshot.isExpired(now) {
+	expired := item.isExpired(now)
+	s.mu.RUnlock()
+
+	if expired {
 		// 异步删除过期项
-		go func() {
-			_ = s.Delete(key)
-		}()
+		go s.Delete(key)
 		return false
 	}
 
@@ -229,22 +222,20 @@ func (s *Storage) TTL(key string) (time.Duration, error) {
 	now := time.Now().Unix()
 
 	s.mu.RLock()
-	entry, exists := s.data[key]
-	var snapshot item
-	if exists {
-		snapshot = *entry
-	}
-	s.mu.RUnlock()
-
+	item, exists := s.data[key]
 	if !exists {
+		s.mu.RUnlock()
 		return -2 * time.Second, ErrKeyNotFound
 	}
 
-	if snapshot.expiration == 0 {
+	expiration := item.expiration
+	s.mu.RUnlock()
+
+	if expiration == 0 {
 		return -1 * time.Second, nil // 永不过期
 	}
 
-	ttl := snapshot.expiration - now
+	ttl := expiration - now
 	if ttl < 0 {
 		return -2 * time.Second, nil // 已过期
 	}

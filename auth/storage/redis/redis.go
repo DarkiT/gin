@@ -125,7 +125,7 @@ func (s *Storage) SetKeepTTL(key string, value any) error {
 	ctx, cancel := s.withTimeout()
 	defer cancel()
 
-	// 先检查键是否存在，不存在则返回错误（与Memory实现保持一致）
+	// 无键则直接失败（对齐内存版 SetKeepTTL）
 	exists, err := s.client.Exists(ctx, s.getKey(key)).Result()
 	if err != nil {
 		return err

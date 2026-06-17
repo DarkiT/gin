@@ -9,8 +9,10 @@ import (
 	"github.com/darkit/gin/auth/core/security"
 	"github.com/darkit/gin/auth/core/session"
 	"github.com/darkit/gin/auth/core/token"
+	"github.com/darkit/gin/auth/storage/kv"
 	"github.com/darkit/gin/auth/storage/memory"
 	"github.com/darkit/gin/auth/storage/redis"
+	"github.com/darkit/gin/pkg/storage"
 )
 
 // ============ 核心类型导出 ============
@@ -142,10 +144,40 @@ func NewRedisStorage(redisURL string) (Storage, error) {
 	return redis.NewStorage(redisURL)
 }
 
+// NewKVStorage 创建严格模式的通用 KV 认证存储。
+//
+// 底层 store 必须支持 storage.TTLStore 与 storage.KeyScanner；不满足时返回错误，避免把基础 KV 后端误用于完整 auth/session 主链。
+func NewKVStorage(store storage.Store) (Storage, error) {
+	return kv.NewStrict(store)
+}
+
+// NewRelaxedKVStorage 创建宽松模式的通用 KV 认证存储。
+//
+// 宽松模式只要求底层实现 storage.Store；调用 TTL、Keys、Expire、SetKeepTTL 等增强能力时，
+// 若后端不支持会返回 kv.ErrUnsupportedOperation。生产认证主链优先使用 NewKVStorage。
+func NewRelaxedKVStorage(store storage.Store) Storage {
+	return kv.NewRelaxed(store)
+}
+
+// NewAtomicKVStorage 创建带原子 SetNX 能力的通用 KV 认证存储。
+//
+// 该入口适合需要 OAuth2 操作锁走后端原子 SetNX 的场景；底层必须实现 kv.AtomicStore。
+func NewAtomicKVStorage(store kv.AtomicStore) Storage {
+	return kv.NewAtomic(store)
+}
+
 // ============ 工厂函数 ============
 
 // NewManager 创建认证管理器
 func NewManager(storage Storage, cfg *AuthConfig) *Manager {
+	if cfg == nil {
+		defaultCfg := DefaultAuthConfig()
+		cfg = &defaultCfg
+	}
+	if storage == nil {
+		storage = NewMemoryStorage()
+	}
+
 	// 验证配置
 	if err := cfg.Validate(); err != nil {
 		panic(err)

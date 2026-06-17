@@ -16,8 +16,12 @@ import (
 
 // Constants for token generation | Token生成常量
 const (
-	DefaultJWTSecret    = "default-secret-key" // Should be overridden in production | 生产环境应覆盖
-	TikTokenLength      = 11                   // TikTok-style short ID length | Tik风格短ID长度
+	// DefaultJWTSecret 仅为哨兵常量，**绝不作为生产密钥回退**。
+	// 保留该常量仅为标记“未配置”状态，禁止用于签发或校验 Token（见 getJWTSecret）。
+	// DefaultJWTSecret is a sentinel marker only — it MUST NOT be used as a signing fallback;
+	// kept solely to flag the "unset" state, never to sign or validate tokens.
+	DefaultJWTSecret    = "default-secret-key"
+	TikTokenLength      = 11 // TikTok-style short ID length | Tik风格短ID长度
 	TikCharset          = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	HashRandomBytesLen  = 16 // Random bytes length for hash token | 哈希Token的随机字节长度
 	TimestampRandomLen  = 8  // Random bytes length for timestamp token | 时间戳Token的随机字节长度
@@ -108,7 +112,6 @@ func (g *Generator) generateJWT(loginID string, device string) (string, error) {
 		"loginId": loginID,
 		"device":  device,
 		"iat":     now.Unix(),
-		"jti":     fmt.Sprintf("%d", now.UnixNano()),
 	}
 
 	// Add expiration if timeout is configured | 如果配置了超时时间则添加过期时间
@@ -117,7 +120,10 @@ func (g *Generator) generateJWT(loginID string, device string) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	secretKey := g.getJWTSecret()
+	secretKey, err := g.getJWTSecret()
+	if err != nil {
+		return "", err
+	}
 
 	signedToken, err := token.SignedString([]byte(secretKey))
 	if err != nil {
@@ -127,12 +133,15 @@ func (g *Generator) generateJWT(loginID string, device string) (string, error) {
 	return signedToken, nil
 }
 
-// getJWTSecret Gets JWT secret key with fallback | 获取JWT密钥（带默认值）
-func (g *Generator) getJWTSecret() string {
-	if g.config.JwtSecretKey != "" {
-		return g.config.JwtSecretKey
+// getJWTSecret 返回配置的 JWT 密钥；密钥为空时返回错误，**禁止静默回退到 DefaultJWTSecret 弱常量**。
+// 这样可避免任何绕过 config.Validate() 直接调用 token.NewGenerator 的路径（refresh_token / apikey 等）
+// 用弱密钥签发出可被任何人伪造的 JWT。
+// getJWTSecret returns the configured JWT secret, or an error when unset — never falls back to the weak default.
+func (g *Generator) getJWTSecret() (string, error) {
+	if g.config != nil && g.config.JwtSecretKey != "" {
+		return g.config.JwtSecretKey, nil
 	}
-	return DefaultJWTSecret
+	return "", fmt.Errorf("JWT secret key is not configured: JwtSecretKey must be set to use JWT-style tokens")
 }
 
 // ============ JWT Helper Methods | JWT辅助方法 ============
@@ -143,7 +152,10 @@ func (g *Generator) ParseJWT(tokenStr string) (jwt.MapClaims, error) {
 		return nil, fmt.Errorf("token string cannot be empty")
 	}
 
-	secretKey := g.getJWTSecret()
+	secretKey, err := g.getJWTSecret()
+	if err != nil {
+		return nil, err
+	}
 
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
 		// Verify signing method | 验证签名方法

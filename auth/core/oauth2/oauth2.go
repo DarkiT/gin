@@ -2,15 +2,23 @@ package oauth2
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/darkit/gin/auth/core/adapter"
 	"github.com/darkit/gin/auth/core/utils"
 )
+
+// secretEqual 对密钥级字符串做恒定时间比较，避免 timing 侧信道逐字节逼近。
+// secretEqual performs a constant-time comparison for secret-level strings.
+func secretEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 // OAuth2 Authorization Code Flow Implementation
 // OAuth2 授权码模式实现
@@ -236,12 +244,7 @@ func (s *OAuth2Server) GenerateAuthorizationCode(clientID, redirectURI, userID s
 
 // isValidRedirectURI Checks if redirect URI is valid for client | 检查回调URI是否有效
 func (s *OAuth2Server) isValidRedirectURI(client *Client, redirectURI string) bool {
-	for _, uri := range client.RedirectURIs {
-		if uri == redirectURI {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(client.RedirectURIs, redirectURI)
 }
 
 // ExchangeCodeForToken Exchanges authorization code for access token | 用授权码换取访问令牌
@@ -252,7 +255,8 @@ func (s *OAuth2Server) ExchangeCodeForToken(code, clientID, clientSecret, redire
 		return nil, err
 	}
 
-	if client.ClientSecret != clientSecret {
+	// client_secret 为密钥级敏感值，用恒定时间比较避免 timing 侧信道。
+	if !secretEqual(client.ClientSecret, clientSecret) {
 		return nil, ErrInvalidClientCredentials
 	}
 
@@ -275,7 +279,8 @@ func (s *OAuth2Server) ExchangeCodeForToken(code, clientID, clientSecret, redire
 			return ErrAuthCodeUsed
 		}
 
-		if authCode.ClientID != clientID {
+		// client_id 统一走恒定时间比较，保持密码学卫生一致。
+		if !secretEqual(authCode.ClientID, clientID) {
 			return ErrClientMismatch
 		}
 
@@ -401,7 +406,8 @@ func (s *OAuth2Server) RefreshAccessToken(refreshToken, clientID, clientSecret s
 		return nil, err
 	}
 
-	if client.ClientSecret != clientSecret {
+	// client_secret 为密钥级敏感值，用恒定时间比较避免 timing 侧信道。
+	if !secretEqual(client.ClientSecret, clientSecret) {
 		return nil, ErrInvalidClientCredentials
 	}
 
@@ -419,7 +425,8 @@ func (s *OAuth2Server) RefreshAccessToken(refreshToken, clientID, clientSecret s
 			return fmt.Errorf("invalid refresh token data: %w", err)
 		}
 
-		if oldToken.ClientID != clientID {
+		// client_id 统一走恒定时间比较，保持密码学卫生一致。
+		if !secretEqual(oldToken.ClientID, clientID) {
 			return ErrClientMismatch
 		}
 		if oldToken.RefreshToken != refreshToken {
@@ -525,7 +532,11 @@ func (s *OAuth2Server) withOperationLock(operation string, fallback *sync.Mutex,
 func decodeAuthorizationCode(data any) (*AuthorizationCode, error) {
 	switch v := data.(type) {
 	case *AuthorizationCode:
-		return v, nil
+		if v == nil {
+			return nil, nil
+		}
+		code := *v
+		return &code, nil
 	case AuthorizationCode:
 		code := v
 		return &code, nil
@@ -545,7 +556,11 @@ func decodeAuthorizationCode(data any) (*AuthorizationCode, error) {
 func decodeAccessToken(data any) (*AccessToken, error) {
 	switch v := data.(type) {
 	case *AccessToken:
-		return v, nil
+		if v == nil {
+			return nil, nil
+		}
+		token := *v
+		return &token, nil
 	case AccessToken:
 		token := v
 		return &token, nil
@@ -565,7 +580,11 @@ func decodeAccessToken(data any) (*AccessToken, error) {
 func decodeClient(data any) (*Client, error) {
 	switch v := data.(type) {
 	case *Client:
-		return v, nil
+		if v == nil {
+			return nil, nil
+		}
+		client := *v
+		return &client, nil
 	case Client:
 		client := v
 		return &client, nil
@@ -580,4 +599,26 @@ func decodeClient(data any) (*Client, error) {
 		}
 		return &client, nil
 	}
+}
+
+// IssueAccessToken implements granttype.ServerLike | 颁发 access_token（ServerLike）
+func (s *OAuth2Server) IssueAccessToken(userID, clientID string, scopes []string) (any, error) {
+	token, err := s.newAccessToken(userID, clientID, scopes)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.storeToken(token); err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+// IssueRefreshToken implements granttype.ServerLike | 刷新令牌（ServerLike）
+func (s *OAuth2Server) IssueRefreshToken(refreshToken, clientID, clientSecret string) (any, error) {
+	return s.RefreshAccessToken(refreshToken, clientID, clientSecret)
+}
+
+// ConsumeAuthorizationCode implements granttype.ServerLike | 消费授权码换 token（ServerLike）
+func (s *OAuth2Server) ConsumeAuthorizationCode(code, clientID, clientSecret, redirectURI string) (any, error) {
+	return s.ExchangeCodeForToken(code, clientID, clientSecret, redirectURI)
 }

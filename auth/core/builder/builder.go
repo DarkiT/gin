@@ -18,6 +18,7 @@ type Builder struct {
 	storage                adapter.Storage
 	tokenName              string
 	timeout                int64
+	refreshTimeout         int64
 	maxRefresh             int64
 	renewInterval          int64
 	activeTimeout          int64
@@ -32,11 +33,13 @@ type Builder struct {
 	isReadBody             bool
 	isReadHeader           bool
 	isReadCookie           bool
+	isReadQuery            bool
 	dataRefreshPeriod      int64
 	tokenSessionCheckLogin bool
 	keyPrefix              string
 	cookieConfig           *config.CookieConfig
 	renewPoolConfig        *pool.RenewPoolConfig
+	rememberMeTimeout      int64
 }
 
 // NewBuilder creates a new builder with default configuration | 创建新的构建器（使用默认配置）
@@ -44,6 +47,7 @@ func NewBuilder() *Builder {
 	return &Builder{
 		tokenName:              config.DefaultTokenName,
 		timeout:                config.DefaultTimeout,
+		refreshTimeout:         config.DefaultTimeout,
 		maxRefresh:             config.DefaultTimeout / 2,
 		renewInterval:          config.NoLimit,
 		activeTimeout:          config.NoLimit,
@@ -57,9 +61,11 @@ func NewBuilder() *Builder {
 		isReadBody:             false,
 		isReadHeader:           true,
 		isReadCookie:           false,
+		isReadQuery:            false,
 		dataRefreshPeriod:      config.NoLimit,
 		tokenSessionCheckLogin: true,
 		keyPrefix:              "satoken:",
+		rememberMeTimeout:      604800, // 7 days | 7天
 		cookieConfig: &config.CookieConfig{
 			Domain:   "",
 			Path:     config.DefaultCookiePath,
@@ -92,6 +98,12 @@ func (b *Builder) Timeout(seconds int64) *Builder {
 // TimeoutDuration sets timeout with duration | 设置超时时间（时间段）
 func (b *Builder) TimeoutDuration(d time.Duration) *Builder {
 	b.timeout = int64(d.Seconds())
+	return b
+}
+
+// RefreshTimeout sets refresh token timeout in seconds | 设置刷新令牌超时时间（秒）
+func (b *Builder) RefreshTimeout(seconds int64) *Builder {
+	b.refreshTimeout = seconds
 	return b
 }
 
@@ -179,6 +191,12 @@ func (b *Builder) IsReadCookie(isRead bool) *Builder {
 	return b
 }
 
+// IsReadQuery sets whether to read token from query | 设置是否从Query读取Token
+func (b *Builder) IsReadQuery(isRead bool) *Builder {
+	b.isReadQuery = isRead
+	return b
+}
+
 // DataRefreshPeriod sets data refresh period | 设置数据刷新周期
 func (b *Builder) DataRefreshPeriod(seconds int64) *Builder {
 	b.dataRefreshPeriod = seconds
@@ -257,10 +275,16 @@ func (b *Builder) RenewPoolConfig(cfg *pool.RenewPoolConfig) *Builder {
 	return b
 }
 
+// RememberMeTimeout sets the remember-me token timeout in seconds | 设置记住我模式Token超时时间（秒）
+func (b *Builder) RememberMeTimeout(seconds int64) *Builder {
+	b.rememberMeTimeout = seconds
+	return b
+}
+
 // KeyPrefix sets storage key prefix | 设置存储键前缀
 // Automatically adds ":" suffix if not present (except for empty string) | 自动添加 ":" 后缀（空字符串除外）
 // Examples: "satoken" -> "satoken:", "myapp" -> "myapp:", "" -> ""
-// Use empty string "" for Java sa-token compatibility | 使用空字符串 "" 兼容 Java sa-token
+// Use empty string "" to omit key namespace prefix | 空字符串表示 Redis 键不加约定前缀
 func (b *Builder) KeyPrefix(prefix string) *Builder {
 	// 如果前缀不为空且不以 : 结尾，自动添加 :
 	if prefix != "" && !strings.HasSuffix(prefix, ":") {
@@ -303,75 +327,98 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("jwtSecretKey is required when TokenStyle is JWT")
 	}
 
-	if !b.isReadHeader && !b.isReadCookie && !b.isReadBody {
-		return fmt.Errorf("at least one of IsReadHeader, IsReadCookie, or IsReadBody must be true")
+	if !b.isReadHeader && !b.isReadCookie && !b.isReadBody && !b.isReadQuery {
+		return fmt.Errorf("at least one of IsReadHeader, IsReadCookie, IsReadBody, or IsReadQuery must be true")
 	}
 
 	// Check MaxRefresh
 	if b.maxRefresh < config.NoLimit {
-		return fmt.Errorf("maxRefresh must be >= -1, got: %d", b.maxRefresh)
+		return fmt.Errorf("MaxRefresh must be >= -1, got: %d", b.maxRefresh)
 	}
 
 	// Adjust MaxRefresh if it exceeds Timeout | 如果 MaxRefresh 大于 Timeout，则自动调整为 Timeout/2
 	if b.timeout != config.NoLimit && b.maxRefresh > b.timeout {
-		b.maxRefresh = b.timeout / 2
-		if b.maxRefresh < 1 {
-			b.maxRefresh = 1
-		}
+		b.maxRefresh = max(b.timeout/2, 1)
 	}
 
 	// Check RenewInterval
 	if b.renewInterval < config.NoLimit {
-		return fmt.Errorf("renewInterval must be >= -1, got: %d", b.renewInterval)
+		return fmt.Errorf("RenewInterval must be >= -1, got: %d", b.renewInterval)
 	}
 
 	// Validate RenewPoolConfig if set | 如果设置了续期池配置，进行验证
 	if b.renewPoolConfig != nil {
 		// Check MinSize and MaxSize | 检查最小和最大协程池大小
 		if b.renewPoolConfig.MinSize <= 0 {
-			return fmt.Errorf("renewPoolConfig.MinSize must be > 0") // 最小协程池大小必须大于0
+			return fmt.Errorf("RenewPoolConfig.MinSize must be > 0") // 最小协程池大小必须大于0
 		}
 		if b.renewPoolConfig.MaxSize < b.renewPoolConfig.MinSize {
-			return fmt.Errorf("renewPoolConfig.MaxSize must be >= renewPoolConfig.MinSize") // 最大协程池大小必须大于等于最小协程池大小
+			return fmt.Errorf("RenewPoolConfig.MaxSize must be >= RenewPoolConfig.MinSize") // 最大协程池大小必须大于等于最小协程池大小
 		}
 
 		// Check ScaleUpRate and ScaleDownRate | 检查扩容和缩容阈值
 		if b.renewPoolConfig.ScaleUpRate <= 0 || b.renewPoolConfig.ScaleUpRate > 1 {
-			return fmt.Errorf("renewPoolConfig.ScaleUpRate must be between 0 and 1") // 扩容阈值必须在0和1之间
+			return fmt.Errorf("RenewPoolConfig.ScaleUpRate must be between 0 and 1") // 扩容阈值必须在0和1之间
 		}
 		if b.renewPoolConfig.ScaleDownRate < 0 || b.renewPoolConfig.ScaleDownRate > 1 {
-			return fmt.Errorf("renewPoolConfig.ScaleDownRate must be between 0 and 1") // 缩容阈值必须在0和1之间
+			return fmt.Errorf("RenewPoolConfig.ScaleDownRate must be between 0 and 1") // 缩容阈值必须在0和1之间
 		}
 
 		// Check CheckInterval | 检查检查间隔
 		if b.renewPoolConfig.CheckInterval <= 0 {
-			return fmt.Errorf("renewPoolConfig.CheckInterval must be a positive duration") // 检查间隔必须是一个正值
+			return fmt.Errorf("RenewPoolConfig.CheckInterval must be a positive duration") // 检查间隔必须是一个正值
 		}
 
 		// Check Expiry | 检查过期时间
 		if b.renewPoolConfig.Expiry <= 0 {
-			return fmt.Errorf("renewPoolConfig.Expiry must be a positive duration") // 过期时间必须是正值
+			return fmt.Errorf("RenewPoolConfig.Expiry must be a positive duration") // 过期时间必须是正值
 		}
 	}
 
 	return nil
 }
 
-// Build builds Manager and prints startup banner | 构建Manager并打印启动Banner
-func (b *Builder) Build() *manager.Manager {
-	// Validate configuration | 验证配置
+// TryBuild builds Manager, returning error on validation failure | 构建Manager，验证失败时返回错误
+func (b *Builder) TryBuild() (*manager.Manager, error) {
 	if err := b.Validate(); err != nil {
-		panic(fmt.Sprintf("invalid configuration: %v", err))
+		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
+	cfg := b.buildConfig()
+
+	if b.isPrintBanner || b.isLog {
+		banner.PrintWithConfig(cfg)
+	}
+
+	mgr := manager.NewManager(b.storage, cfg)
+	return mgr, nil
+}
+
+// Build builds Manager and prints startup banner | 构建Manager并打印启动Banner
+func (b *Builder) Build() *manager.Manager {
+	mgr, err := b.TryBuild()
+	if err != nil {
+		panic(err.Error())
+	}
+	return mgr
+}
+
+// MustBuild builds Manager and panics if validation fails | 构建Manager，验证失败时panic
+func (b *Builder) MustBuild() *manager.Manager {
+	return b.Build()
+}
+
+// buildConfig constructs Config from builder fields | 从构建器字段构造Config
+func (b *Builder) buildConfig() *config.Config {
 	// Automatically adjust MaxRefresh if user customized Timeout but didn't set MaxRefresh | 自动调整MaxRefresh逻辑
 	if b.timeout != config.DefaultTimeout && b.maxRefresh == config.DefaultTimeout/2 {
 		b.maxRefresh = b.timeout / 2
 	}
 
-	cfg := &config.Config{
+	return &config.Config{
 		TokenName:              b.tokenName,
 		Timeout:                b.timeout,
+		RefreshTimeout:         b.refreshTimeout,
 		MaxRefresh:             b.maxRefresh,
 		RenewInterval:          b.renewInterval,
 		ActiveTimeout:          b.activeTimeout,
@@ -381,6 +428,7 @@ func (b *Builder) Build() *manager.Manager {
 		IsReadBody:             b.isReadBody,
 		IsReadHeader:           b.isReadHeader,
 		IsReadCookie:           b.isReadCookie,
+		IsReadQuery:            b.isReadQuery,
 		TokenStyle:             b.tokenStyle,
 		DataRefreshPeriod:      b.dataRefreshPeriod,
 		TokenSessionCheckLogin: b.tokenSessionCheckLogin,
@@ -391,23 +439,6 @@ func (b *Builder) Build() *manager.Manager {
 		KeyPrefix:              b.keyPrefix,
 		CookieConfig:           b.cookieConfig,
 		RenewPoolConfig:        b.renewPoolConfig,
+		RememberMeTimeout:      b.rememberMeTimeout,
 	}
-
-	// Print startup banner with full configuration | 打印启动Banner和完整配置
-	// Only skip printing when both IsLog=false AND IsPrintBanner=false | 只有当 IsLog=false 且 IsPrintBanner=false 时才不打印
-	if b.isPrintBanner || b.isLog {
-		banner.PrintWithConfig(cfg)
-	}
-
-	mgr := manager.NewManager(b.storage, cfg)
-
-	// Note: If you use the stputil package, it will automatically set the global Manager | 注意：如果你使用了 stputil 包，它会自动设置全局 Manager
-	// We don't directly call stputil.SetManager here to avoid hard dependencies | 这里不直接调用 stputil.SetManager，避免强依赖
-
-	return mgr
-}
-
-// MustBuild builds Manager and panics if validation fails | 构建Manager，验证失败时panic
-func (b *Builder) MustBuild() *manager.Manager {
-	return b.Build()
 }

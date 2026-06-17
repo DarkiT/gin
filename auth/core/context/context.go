@@ -4,12 +4,15 @@ import (
 	"strings"
 
 	"github.com/darkit/gin/auth/core/adapter"
+	"github.com/darkit/gin/auth/core/config"
 	"github.com/darkit/gin/auth/core/manager"
 )
 
 const (
 	bearerPrefix = "Bearer "
-	authHeader   = "Authorization"
+	// AuthHeaderName 标准 HTTP Authorization 头（见 RFC 7235）
+	// AuthHeaderName is the standard HTTP Authorization header
+	AuthHeaderName = "Authorization"
 )
 
 // SaTokenContext Sa-Token context for current request | Sa-Token上下文，用于当前请求
@@ -26,14 +29,14 @@ func NewContext(ctx adapter.RequestContext, mgr *manager.Manager) *SaTokenContex
 	}
 }
 
-// extractBearerToken 从 Authorization 头中提取 Bearer Token
+// extractBearerToken 从 Authorization 头中提取 Bearer Token（大小写不敏感）
+// extractBearerToken strips case-insensitive "Bearer " prefix from Authorization header
 func extractBearerToken(auth string) string {
 	auth = strings.TrimSpace(auth)
 	if auth == "" {
 		return ""
 	}
 
-	// 支持大小写不敏感的 Bearer 前缀
 	if len(auth) > 7 && strings.EqualFold(auth[:7], bearerPrefix) {
 		return strings.TrimSpace(auth[7:])
 	}
@@ -41,38 +44,71 @@ func extractBearerToken(auth string) string {
 	return auth
 }
 
-// GetTokenValue gets token value from current request | 获取当前请求的Token值
-func (c *SaTokenContext) GetTokenValue() string {
-	cfg := c.manager.GetConfig()
+// ResolveTokenName 解析本次请求应使用的 Token 键名：显式配置了非空 TokenName 则用配置，否则回退为 Authorization
+// ResolveTokenName returns cfg.TokenName when set; otherwise falls back to "Authorization"
+func ResolveTokenName(cfg *config.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.TokenName) != "" {
+		return cfg.TokenName
+	}
+	return AuthHeaderName
+}
 
-	// 1. 尝试从Header获取
-	if cfg.IsReadHeader {
-		// 从自定义 token 名称的 Header 获取
-		if token := strings.TrimSpace(c.ctx.GetHeader(cfg.TokenName)); token != "" {
-			return token
+// ReadTokenFromRequest 从适配请求中按 Header → Cookie → Query 读取 Token，并对结果执行 CutTokenPrefix（与 PathAuth、TokenInterceptor 同源；Query 常用于 apikey）
+// ReadTokenFromRequest reads token: Header first, then Cookie, then Query (apikey); applies CutTokenPrefix on the raw value
+func ReadTokenFromRequest(ctx adapter.RequestContext, mgr *manager.Manager) string {
+	if ctx == nil || mgr == nil {
+		return ""
+	}
+	cfg := mgr.GetConfig()
+	name := ResolveTokenName(cfg)
+
+	readHeader := cfg == nil || cfg.IsReadHeader
+	readCookie := cfg == nil || cfg.IsReadCookie
+	// Query 默认关闭：token 经 URL 会泄漏到 access log / Referer / 浏览器历史 / 反代日志（OWASP 反对的传递方式）。
+	// 仅在显式开启 IsReadQuery（典型为 apikey 场景）时才从 URL 读取。
+	// Query is off by default: tokens in URLs leak into logs/Referer/history (OWASP-discouraged).
+	readQuery := cfg != nil && cfg.IsReadQuery
+
+	// 1) Header：先读 TokenName 对应头；若名不是 Authorization，再尝试 Authorization Bearer 兜底
+	if readHeader {
+		if v := strings.TrimSpace(ctx.GetHeader(name)); v != "" {
+			if strings.EqualFold(name, AuthHeaderName) {
+				if t := extractBearerToken(v); t != "" {
+					return mgr.CutTokenPrefix(t)
+				}
+			}
+			return mgr.CutTokenPrefix(v)
 		}
-
-		// 从 Authorization 头获取
-		if auth := c.ctx.GetHeader(authHeader); auth != "" {
-			if token := extractBearerToken(auth); token != "" {
-				return token
+		if !strings.EqualFold(name, AuthHeaderName) {
+			if auth := strings.TrimSpace(ctx.GetHeader(AuthHeaderName)); auth != "" {
+				if t := extractBearerToken(auth); t != "" {
+					return mgr.CutTokenPrefix(t)
+				}
 			}
 		}
 	}
 
-	// 2. 尝试从Cookie获取
-	if cfg.IsReadCookie {
-		if token := strings.TrimSpace(c.ctx.GetCookie(cfg.TokenName)); token != "" {
-			return token
+	// 2) Cookie：键与 Header 使用同一 ResolveTokenName
+	if readCookie {
+		if v := strings.TrimSpace(ctx.GetCookie(name)); v != "" {
+			return mgr.CutTokenPrefix(v)
 		}
 	}
 
-	// 3. 尝试从Query参数获取
-	if token := strings.TrimSpace(c.ctx.GetQuery(cfg.TokenName)); token != "" {
-		return token
+	// 3) Query（URL 参数传递 token，例如 ?satoken=xxx 或回退名 ?Authorization=xxx）
+	//    仅在 IsReadQuery 开启时读取，避免 token 经 URL 泄漏到日志/Referer/历史。
+	if readQuery {
+		if v := strings.TrimSpace(ctx.GetQuery(name)); v != "" {
+			return mgr.CutTokenPrefix(v)
+		}
 	}
 
 	return ""
+}
+
+// GetTokenValue gets token value from current request | 获取当前请求的Token值
+func (c *SaTokenContext) GetTokenValue() string {
+	return ReadTokenFromRequest(c.ctx, c.manager)
 }
 
 // IsLogin 检查当前请求是否已登录

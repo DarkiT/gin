@@ -177,63 +177,127 @@ func DefaultAuthConfig() AuthConfig {
 	}
 }
 
+func (c AuthConfig) withDefaults() AuthConfig {
+	defaults := DefaultAuthConfig()
+	defaultBased := c.appearsDefaultBased()
+
+	if c.Secret != "" {
+		defaults.Secret = c.Secret
+	}
+	if c.Expiry > 0 {
+		defaults.Expiry = c.Expiry
+	}
+	if c.RefreshExpiry > 0 {
+		defaults.RefreshExpiry = c.RefreshExpiry
+	}
+	if c.TokenName != "" {
+		defaults.TokenName = c.TokenName
+	}
+	if c.TokenStyle != "" {
+		defaults.TokenStyle = c.TokenStyle
+	}
+	if c.KeyPrefix != "" {
+		defaults.KeyPrefix = c.KeyPrefix
+	}
+
+	if c.ReadFromHeader || c.ReadFromCookie || c.ReadFromQuery || c.ReadFromBody || defaultBased {
+		defaults.ReadFromHeader = c.ReadFromHeader
+		defaults.ReadFromCookie = c.ReadFromCookie
+		defaults.ReadFromQuery = c.ReadFromQuery
+		defaults.ReadFromBody = c.ReadFromBody
+	}
+
+	if c.AllowConcurrent || c.ShareToken || c.MaxLoginCount != 0 {
+		defaults.AllowConcurrent = c.AllowConcurrent
+		defaults.ShareToken = c.ShareToken
+		defaults.MaxLoginCount = c.MaxLoginCount
+	}
+	if c.AutoRenew || c.RenewInterval != 0 || c.MaxRefresh != 0 || c.ActiveTimeout != 0 || defaultBased {
+		defaults.AutoRenew = c.AutoRenew
+		defaults.RenewInterval = c.RenewInterval
+		defaults.MaxRefresh = c.MaxRefresh
+		defaults.ActiveTimeout = c.ActiveTimeout
+	}
+
+	if c.CookieConfig != nil {
+		defaults.CookieConfig = c.CookieConfig
+	}
+	if c.Storage != nil {
+		defaults.Storage = c.Storage
+	}
+	if c.PermissionLoader != nil {
+		defaults.PermissionLoader = c.PermissionLoader
+	}
+	if c.RoleLoader != nil {
+		defaults.RoleLoader = c.RoleLoader
+	}
+
+	return defaults
+}
+
+func (c AuthConfig) appearsDefaultBased() bool {
+	return c.CookieConfig != nil && c.MaxLoginCount == config.DefaultMaxLoginCount
+}
+
 // toInternalConfig 转换为内部配置
 // 将用户友好的配置转换为 core 层使用的配置
 func (c *AuthConfig) toInternalConfig() *config.Config {
+	normalized := c.withDefaults()
 	cfg := config.DefaultConfig()
 
 	// 基础配置
-	if c.TokenName != "" {
-		cfg.TokenName = c.TokenName
+	if normalized.TokenName != "" {
+		cfg.TokenName = normalized.TokenName
 	}
-	if c.Expiry > 0 {
-		cfg.Timeout = int64(c.Expiry.Seconds())
+	if normalized.Expiry > 0 {
+		cfg.Timeout = int64(normalized.Expiry.Seconds())
 	}
-	if c.RefreshExpiry > 0 {
-		cfg.RefreshTimeout = int64(c.RefreshExpiry.Seconds())
+	if normalized.RefreshExpiry > 0 {
+		cfg.RefreshTimeout = int64(normalized.RefreshExpiry.Seconds())
 	}
-	cfg.TokenStyle = config.TokenStyle(c.TokenStyle)
-	if c.KeyPrefix != "" {
-		cfg.KeyPrefix = c.KeyPrefix
+	cfg.TokenStyle = config.TokenStyle(normalized.TokenStyle)
+	if normalized.KeyPrefix != "" {
+		cfg.KeyPrefix = normalized.KeyPrefix
 	}
 
 	// JWT 配置
-	if c.Secret != "" {
-		cfg.JwtSecretKey = c.Secret
+	if normalized.Secret != "" {
+		cfg.JwtSecretKey = normalized.Secret
 	}
 
 	// 读取配置
-	cfg.IsReadHeader = c.ReadFromHeader
-	cfg.IsReadCookie = c.ReadFromCookie
-	cfg.IsReadBody = c.ReadFromBody
+	cfg.IsReadHeader = normalized.ReadFromHeader
+	cfg.IsReadCookie = normalized.ReadFromCookie
+	cfg.IsReadQuery = normalized.ReadFromQuery
+	cfg.IsReadBody = normalized.ReadFromBody
 
 	// 并发登录配置
-	cfg.IsConcurrent = c.AllowConcurrent
-	cfg.IsShare = c.ShareToken
-	cfg.MaxLoginCount = c.MaxLoginCount
+	cfg.IsConcurrent = normalized.AllowConcurrent
+	cfg.IsShare = normalized.ShareToken
+	cfg.MaxLoginCount = normalized.MaxLoginCount
 
 	// 自动续期配置
-	cfg.AutoRenew = c.AutoRenew
-	if c.RenewInterval > 0 {
-		cfg.RenewInterval = int64(c.RenewInterval.Seconds())
+	cfg.AutoRenew = normalized.AutoRenew
+	if normalized.RenewInterval > 0 {
+		cfg.RenewInterval = int64(normalized.RenewInterval.Seconds())
 	}
-	if c.MaxRefresh > 0 {
-		cfg.MaxRefresh = int64(c.MaxRefresh.Seconds())
+	if normalized.MaxRefresh > 0 {
+		cfg.MaxRefresh = int64(normalized.MaxRefresh.Seconds())
 	}
-	if c.ActiveTimeout > 0 {
-		cfg.ActiveTimeout = int64(c.ActiveTimeout.Seconds())
+	if normalized.ActiveTimeout > 0 {
+		cfg.ActiveTimeout = int64(normalized.ActiveTimeout.Seconds())
 	}
 
 	// Cookie 配置
-	if c.CookieConfig != nil {
+	if normalized.CookieConfig != nil {
 		if cfg.CookieConfig == nil {
 			cfg.CookieConfig = &config.CookieConfig{}
 		}
-		cfg.CookieConfig.Path = c.CookieConfig.Path
-		cfg.CookieConfig.Domain = c.CookieConfig.Domain
-		cfg.CookieConfig.Secure = c.CookieConfig.Secure
-		cfg.CookieConfig.HttpOnly = c.CookieConfig.HttpOnly
-		cfg.CookieConfig.SameSite = config.SameSiteMode(c.CookieConfig.SameSite)
+		cfg.CookieConfig.Path = normalized.CookieConfig.Path
+		cfg.CookieConfig.Domain = normalized.CookieConfig.Domain
+		cfg.CookieConfig.Secure = normalized.CookieConfig.Secure
+		cfg.CookieConfig.HttpOnly = normalized.CookieConfig.HttpOnly
+		cfg.CookieConfig.SameSite = config.SameSiteMode(normalized.CookieConfig.SameSite)
 	}
 
 	return cfg
@@ -241,21 +305,22 @@ func (c *AuthConfig) toInternalConfig() *config.Config {
 
 // Validate 验证配置
 func (c *AuthConfig) Validate() error {
+	normalized := c.withDefaults()
 	// 验证 Token 风格
-	if !TokenStyle(c.TokenStyle).IsValid() {
+	if !TokenStyle(normalized.TokenStyle).IsValid() {
 		return ErrInvalidTokenStyle
 	}
 
 	// JWT 风格必须提供 Secret
-	if c.TokenStyle == TokenStyleJWT && c.Secret == "" {
+	if normalized.TokenStyle == TokenStyleJWT && normalized.Secret == "" {
 		return ErrJWTSecretRequired
 	}
 
-	// Token 过期时间必须大于 0
-	if c.Expiry <= 0 {
+	// Token 过期时间不能为负，0 表示使用默认值。
+	if c.Expiry < 0 {
 		return ErrInvalidExpiry
 	}
-	if c.RefreshExpiry <= 0 {
+	if c.RefreshExpiry < 0 {
 		return ErrInvalidExpiry
 	}
 

@@ -447,37 +447,51 @@ func (a *AuthContext) extractToken() string {
 
 	// 1. 从 Header 读取
 	if cfg.IsReadHeader {
-		if token := a.ctx.GetHeader(cfg.TokenName); token != "" {
+		if token := strings.TrimSpace(a.ctx.GetHeader(cfg.TokenName)); token != "" {
 			return token
 		}
 		// 支持 Bearer Token
 		if auth := a.ctx.GetHeader("Authorization"); auth != "" {
-			if strings.HasPrefix(auth, "Bearer ") {
-				return strings.TrimPrefix(auth, "Bearer ")
+			if token := extractBearerToken(auth); token != "" {
+				return token
 			}
 		}
 	}
 
 	// 2. 从 Cookie 读取
 	if cfg.IsReadCookie {
-		if token := a.ctx.GetCookie(cfg.TokenName); token != "" {
+		if token := strings.TrimSpace(a.ctx.GetCookie(cfg.TokenName)); token != "" {
 			return token
 		}
 	}
 
 	// 3. 从 Query 读取
-	if token := a.ctx.GetQuery(cfg.TokenName); token != "" {
-		return token
+	if cfg.IsReadQuery {
+		if token := strings.TrimSpace(a.ctx.GetQuery(cfg.TokenName)); token != "" {
+			return token
+		}
 	}
 
 	// 4. 从 Body 读取（如果配置了）
 	if cfg.IsReadBody {
-		if token := a.ctx.GetPostForm(cfg.TokenName); token != "" {
+		if token := strings.TrimSpace(a.ctx.GetPostForm(cfg.TokenName)); token != "" {
 			return token
 		}
 	}
 
 	return ""
+}
+
+func extractBearerToken(auth string) string {
+	auth = strings.TrimSpace(auth)
+	const bearer = "Bearer"
+	if len(auth) <= len(bearer) || !strings.EqualFold(auth[:len(bearer)], bearer) {
+		return ""
+	}
+	if auth[len(bearer)] != ' ' && auth[len(bearer)] != '\t' {
+		return ""
+	}
+	return strings.TrimSpace(auth[len(bearer):])
 }
 
 func (a *AuthContext) authError() error {

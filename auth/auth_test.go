@@ -35,6 +35,61 @@ func setupTestContext(mgr *Manager) (*gin.Context, *AuthContext) {
 	return c, authCtx
 }
 
+func TestAuthConfigPartialLiteralUsesDefaults(t *testing.T) {
+	cfg := AuthConfig{
+		Secret:     "jwt-secret",
+		Expiry:     time.Hour,
+		TokenStyle: TokenStyleJWT,
+	}
+
+	require.NoError(t, cfg.Validate())
+	internal := cfg.toInternalConfig()
+
+	assert.Equal(t, TokenStyleJWT, TokenStyle(internal.TokenStyle))
+	assert.Equal(t, int64(time.Hour.Seconds()), internal.Timeout)
+	assert.Equal(t, int64((30 * 24 * time.Hour).Seconds()), internal.RefreshTimeout)
+	assert.True(t, internal.IsReadHeader)
+	assert.False(t, internal.IsReadCookie)
+	assert.False(t, internal.IsReadQuery)
+	assert.True(t, internal.IsConcurrent)
+	assert.True(t, internal.IsShare)
+	assert.True(t, internal.AutoRenew)
+	assert.Equal(t, "satoken:", internal.KeyPrefix)
+}
+
+func TestAuthConfigZeroValueUsesDefaults(t *testing.T) {
+	var cfg AuthConfig
+
+	require.NoError(t, cfg.Validate())
+	internal := cfg.toInternalConfig()
+
+	assert.Equal(t, TokenStyleUUID, TokenStyle(internal.TokenStyle))
+	assert.True(t, internal.IsReadHeader)
+	assert.Equal(t, int64((30 * 24 * time.Hour).Seconds()), internal.Timeout)
+}
+
+func TestAuthConfigDefaultBasedExplicitFalseIsPreserved(t *testing.T) {
+	cfg := DefaultAuthConfig()
+	cfg.ReadFromHeader = false
+	cfg.AutoRenew = false
+
+	require.NoError(t, cfg.Validate())
+	internal := cfg.toInternalConfig()
+
+	assert.False(t, internal.IsReadHeader)
+	assert.False(t, internal.AutoRenew)
+}
+
+func TestNewManagerNilConfigUsesDefaults(t *testing.T) {
+	require.NotPanics(t, func() {
+		mgr := NewManager(nil, nil)
+		require.NotNil(t, mgr)
+		token, err := mgr.Login("user-nil-config", "web")
+		require.NoError(t, err)
+		assert.NotEmpty(t, token)
+	})
+}
+
 func TestAuthContext_Login(t *testing.T) {
 	mgr := setupTestManager()
 	_, authCtx := setupTestContext(mgr)
@@ -433,7 +488,12 @@ func TestAuthContext_TokenInfo(t *testing.T) {
 }
 
 func TestAuthContext_ExtractToken(t *testing.T) {
-	mgr := setupTestManager()
+	cfg := DefaultAuthConfig()
+	cfg.TokenStyle = TokenStyleUUID
+	cfg.Expiry = time.Hour
+	cfg.ReadFromCookie = true
+	cfg.ReadFromQuery = true
+	mgr := NewManager(NewMemoryStorage(), &cfg)
 
 	tests := []struct {
 		name     string
@@ -450,7 +510,7 @@ func TestAuthContext_ExtractToken(t *testing.T) {
 		{
 			name: "从 Authorization Bearer 读取",
 			setup: func(c *gin.Context) {
-				c.Request.Header.Set("Authorization", "Bearer token-from-bearer")
+				c.Request.Header.Set("Authorization", "bearer   token-from-bearer")
 			},
 			expected: "token-from-bearer",
 		},
@@ -488,6 +548,16 @@ func TestAuthContext_ExtractToken(t *testing.T) {
 			token := authCtx.Token()
 			assert.Equal(t, tt.expected, token)
 		})
+	}
+}
+
+func TestAuthContext_QueryTokenRequiresConfig(t *testing.T) {
+	mgr := setupTestManager()
+	c, authCtx := setupTestContext(mgr)
+	c.Request.URL.RawQuery = "satoken=token-from-query"
+
+	if token := authCtx.Token(); token != "" {
+		t.Fatalf("query token should be disabled by default, got %q", token)
 	}
 }
 

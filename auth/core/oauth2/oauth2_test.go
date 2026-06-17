@@ -293,3 +293,88 @@ func TestOAuth2ExchangeCodeForTokenSingleUseUnderConcurrency(t *testing.T) {
 		t.Fatalf("successCount=%d usedCount=%d, want 1/1", successCount, usedCount)
 	}
 }
+
+func TestDecodeHelpers_CopyPointerInput(t *testing.T) {
+	t.Run("authorization code", func(t *testing.T) {
+		original := &AuthorizationCode{
+			Code:        "code-1",
+			ClientID:    "client-1",
+			RedirectURI: "https://example.com/callback",
+			UserID:      "user-1",
+			Scopes:      []string{"profile:read"},
+			CreateTime:  1,
+			ExpiresIn:   60,
+			Used:        false,
+		}
+
+		decoded, err := decodeAuthorizationCode(original)
+		if err != nil {
+			t.Fatalf("decodeAuthorizationCode() error = %v", err)
+		}
+		if decoded == nil {
+			t.Fatal("decodeAuthorizationCode() returned nil")
+		}
+		if decoded == original {
+			t.Fatal("decodeAuthorizationCode() should return a copy for pointer input")
+		}
+
+		decoded.Used = true
+		if original.Used {
+			t.Fatal("mutating decoded authorization code should not affect original")
+		}
+	})
+
+	t.Run("access token", func(t *testing.T) {
+		original := &AccessToken{
+			Token:        "token-1",
+			TokenType:    TokenTypeBearer,
+			ExpiresIn:    3600,
+			RefreshToken: "refresh-1",
+			Scopes:       []string{"profile:read"},
+			UserID:       "user-1",
+			ClientID:     "client-1",
+		}
+
+		decoded, err := decodeAccessToken(original)
+		if err != nil {
+			t.Fatalf("decodeAccessToken() error = %v", err)
+		}
+		if decoded == nil {
+			t.Fatal("decodeAccessToken() returned nil")
+		}
+		if decoded == original {
+			t.Fatal("decodeAccessToken() should return a copy for pointer input")
+		}
+
+		decoded.Token = "token-2"
+		if original.Token != "token-1" {
+			t.Fatal("mutating decoded access token should not affect original")
+		}
+	})
+
+	t.Run("client", func(t *testing.T) {
+		original := &Client{
+			ClientID:     "client-1",
+			ClientSecret: "secret-1",
+			RedirectURIs: []string{"https://example.com/callback"},
+			GrantTypes:   []GrantType{GrantTypeAuthorizationCode},
+			Scopes:       []string{"profile:read"},
+		}
+
+		decoded, err := decodeClient(original)
+		if err != nil {
+			t.Fatalf("decodeClient() error = %v", err)
+		}
+		if decoded == nil {
+			t.Fatal("decodeClient() returned nil")
+		}
+		if decoded == original {
+			t.Fatal("decodeClient() should return a copy for pointer input")
+		}
+
+		decoded.ClientSecret = "secret-2"
+		if original.ClientSecret != "secret-1" {
+			t.Fatal("mutating decoded client should not affect original")
+		}
+	})
+}

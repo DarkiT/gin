@@ -17,7 +17,7 @@ var (
 	ErrJWTSecretRequired = errors.New("TokenStyle 为 JWT 时必须提供 Secret")
 
 	// ErrInvalidExpiry 无效的过期时间
-	ErrInvalidExpiry = errors.New("Token 过期时间必须大于 0")
+	ErrInvalidExpiry = errors.New("Token 过期时间不能为负")
 
 	// ErrPermissionDenied 权限不足
 	ErrPermissionDenied = errors.New("权限不足")

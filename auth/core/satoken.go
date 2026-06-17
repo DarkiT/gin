@@ -21,6 +21,10 @@ import (
 // Version Sa-Token-Go version | Sa-Token-Go版本
 const Version = version.Version
 
+// AuthHeaderName 标准 Authorization 头名（与 context.AuthHeaderName 一致，供业务层常量引用）
+// AuthHeaderName is the standard Authorization header name
+const AuthHeaderName = context.AuthHeaderName
+
 // ============ Exported Types | 导出的类型 ============
 // Export main types and functions for external use | 导出主要类型和函数，方便外部使用
 
@@ -61,6 +65,11 @@ type (
 	OAuth2GrantType     = oauth2.GrantType
 	PathAuthConfig      = router.PathAuthConfig
 	AuthResult          = router.AuthResult
+	ApiKeyInfo          = security.ApiKeyInfo
+	ApiKeyManager       = security.ApiKeyManager
+	TempTokenInfo       = security.TempTokenInfo
+	TempTokenManager    = security.TempTokenManager
+	SameTokenTemplate   = security.SameTokenTemplate
 )
 
 // Adapter interfaces | 适配器接口
@@ -138,6 +147,18 @@ var (
 	SHA256Hash   = utils.SHA256Hash
 	Base64Encode = utils.Base64Encode
 	Base64Decode = utils.Base64Decode
+
+	// Crypto utilities | 加密工具
+	MD5Hash      = utils.MD5Hash
+	SHA1Hash     = utils.SHA1Hash
+	AESEncrypt   = utils.AESEncrypt
+	AESDecrypt   = utils.AESDecrypt
+	PasswordHash = utils.PasswordHash
+	GenerateSalt = utils.GenerateSalt
+
+	// Token read helpers → integrations + SaTokenContext
+	ResolveTokenName     = context.ResolveTokenName
+	ReadTokenFromRequest = context.ReadTokenFromRequest
 )
 
 // ============ Factory Functions | 工厂函数 ============
@@ -199,4 +220,19 @@ func NewRefreshTokenManager(storage Storage, prefix string, cfg *Config) *Refres
 // NewOAuth2Server Creates a new OAuth2 server | 创建新的OAuth2服务器
 func NewOAuth2Server(storage Storage, prefix string) *OAuth2Server {
 	return oauth2.NewOAuth2Server(storage, prefix)
+}
+
+// NewApiKeyManager Creates a new API key manager | 创建新的API Key管理器
+func NewApiKeyManager(storage Storage, prefix string) *ApiKeyManager {
+	return security.NewApiKeyManager(storage, prefix)
+}
+
+// NewTempTokenManager Creates a new temp token manager | 创建新的临时Token管理器
+func NewTempTokenManager(storage Storage, prefix string) *TempTokenManager {
+	return security.NewTempTokenManager(storage, prefix)
+}
+
+// NewSameTokenTemplate Creates a new same-token template | 创建新的服务间调用令牌管理器
+func NewSameTokenTemplate(storage Storage, prefix string, timeout time.Duration) *SameTokenTemplate {
+	return security.NewSameTokenTemplate(storage, prefix, timeout)
 }

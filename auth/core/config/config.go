@@ -101,6 +101,9 @@ type Config struct {
 	// IsReadCookie Try to read Token from Cookie (default: false) | 是否尝试从Cookie里读取Token（默认：false）
 	IsReadCookie bool
 
+	// IsReadQuery Try to read Token from URL query (default: false) | 是否尝试从URL Query里读取Token（默认：false）
+	IsReadQuery bool
+
 	// TokenStyle Token generation style | Token风格
 	TokenStyle TokenStyle
 
@@ -123,7 +126,7 @@ type Config struct {
 	IsPrintBanner bool
 
 	// KeyPrefix Storage key prefix for Redis isolation (default: "satoken:") | 存储键前缀，用于Redis隔离（默认："satoken:"）
-	// Set to empty "" to be compatible with Java sa-token default behavior | 设置为空""以兼容Java sa-token默认行为
+	// Empty string: no global key-prefix segment for stored keys | 空字符串表示键名不加统一前缀片段
 	KeyPrefix string
 
 	// CookieConfig Cookie configuration | Cookie配置
@@ -131,6 +134,69 @@ type Config struct {
 
 	// RenewPoolConfig Configuration for renewal pool manager | 续期池配置
 	RenewPoolConfig *pool.RenewPoolConfig
+
+	// LoginType realm tag for multi-account setups (default "login") | 多账号体系标识
+	LoginType string
+
+	// RightNowCreateTokenSession eagerly create Token-Session on login | 登录时立即创建 Token-Session
+	RightNowCreateTokenSession bool
+
+	// IsLogoutKeepTokenSession keep Token-Session after logout | 注销后保留 Token-Session
+	IsLogoutKeepTokenSession bool
+
+	// ReplacedRange overrun logout scope: CURR_DEVICE / ALL_DEVICE | 顶号下线范围
+	ReplacedRange string
+
+	// OverflowLogoutMode when MaxLoginCount exceeded: LOGOUT / KICKOUT / REPLACED | 溢出并发登录处理
+	OverflowLogoutMode string
+
+	// TokenPrefix bearer prefix in header e.g. "Bearer " | Token 前缀
+	TokenPrefix string
+
+	// SafeAuthDefaultService default second-level auth service tag | 二级认证默认 service
+	SafeAuthDefaultService string
+
+	// RememberMeTimeout Token timeout for remember-me login (seconds), -1 for never expire | 记住我模式下Token超时时间（秒），-1代表永不过期
+	RememberMeTimeout int64
+
+	// SameTokenTimeout same-token validity in seconds (default 86400 = 24h) | 服务间调用令牌有效期（秒）
+	SameTokenTimeout int64
+
+	// CheckSameToken enable same-token checking globally | 是否启用服务间调用令牌校验
+	CheckSameToken bool
+
+	// SsoServer optional SSO server plugin config | SSO 服务端子配置
+	SsoServer *SsoServerPluginConfig
+
+	// SsoClient optional SSO client plugin config | SSO 客户端子配置
+	SsoClient *SsoClientPluginConfig
+
+	// OAuth2Server optional OAuth2 server plugin config | OAuth2 服务端子配置
+	OAuth2Server *OAuth2ServerPluginConfig
+}
+
+// SsoServerPluginConfig placeholder for plugins/sso/server | SSO Server 插件配置占位
+type SsoServerPluginConfig struct {
+	TicketTimeoutSec int64
+	AllowURL         string
+	IsSlo            bool
+	SecretKey        string
+}
+
+// SsoClientPluginConfig placeholder for plugins/sso/client | SSO Client 插件配置占位
+type SsoClientPluginConfig struct {
+	ServerURL string
+	ClientID  string
+	SecretKey string
+	AllowURL  string
+}
+
+// OAuth2ServerPluginConfig placeholder for extended OAuth2 routes | OAuth2 插件配置占位
+type OAuth2ServerPluginConfig struct {
+	AuthorizePath string
+	TokenPath     string
+	RefreshPath   string
+	RevokePath    string
 }
 
 // CookieConfig Cookie configuration | Cookie配置
@@ -157,26 +223,37 @@ type CookieConfig struct {
 // DefaultConfig Returns default configuration | 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		TokenName:              DefaultTokenName,
-		Timeout:                DefaultTimeout,
-		RefreshTimeout:         DefaultTimeout,
-		MaxRefresh:             DefaultTimeout / 2,
-		RenewInterval:          NoLimit,
-		ActiveTimeout:          NoLimit,
-		IsConcurrent:           true,
-		IsShare:                true,
-		MaxLoginCount:          DefaultMaxLoginCount,
-		IsReadBody:             false,
-		IsReadHeader:           true,
-		IsReadCookie:           false,
-		TokenStyle:             TokenStyleUUID,
-		DataRefreshPeriod:      NoLimit,
-		TokenSessionCheckLogin: true,
-		AutoRenew:              true,
-		JwtSecretKey:           "",
-		IsLog:                  false,
-		IsPrintBanner:          true,
-		KeyPrefix:              "satoken:",
+		TokenName:                  DefaultTokenName,
+		Timeout:                    DefaultTimeout,
+		RefreshTimeout:             DefaultTimeout,
+		MaxRefresh:                 DefaultTimeout / 2,
+		RenewInterval:              NoLimit,
+		ActiveTimeout:              NoLimit,
+		IsConcurrent:               true,
+		IsShare:                    true,
+		MaxLoginCount:              DefaultMaxLoginCount,
+		IsReadBody:                 false,
+		IsReadHeader:               true,
+		IsReadCookie:               false,
+		IsReadQuery:                false,
+		TokenStyle:                 TokenStyleUUID,
+		DataRefreshPeriod:          NoLimit,
+		TokenSessionCheckLogin:     true,
+		AutoRenew:                  true,
+		JwtSecretKey:               "",
+		IsLog:                      false,
+		IsPrintBanner:              true,
+		KeyPrefix:                  "satoken:",
+		LoginType:                  "login",
+		RightNowCreateTokenSession: false,
+		IsLogoutKeepTokenSession:   false,
+		ReplacedRange:              "CURR_DEVICE",
+		OverflowLogoutMode:         "LOGOUT",
+		TokenPrefix:                "",
+		SafeAuthDefaultService:     "important",
+		RememberMeTimeout:          604800, // 7 days | 7天
+		SameTokenTimeout:           86400,  // 24 hours | 24小时
+		CheckSameToken:             false,
 		CookieConfig: &CookieConfig{
 			Domain:   "",
 			Path:     DefaultCookiePath,
@@ -192,7 +269,7 @@ func DefaultConfig() *Config {
 func (c *Config) Validate() error {
 	// Check TokenName
 	if c.TokenName == "" {
-		return fmt.Errorf("tokenName cannot be empty")
+		return fmt.Errorf("TokenName cannot be empty")
 	}
 
 	// Check TokenStyle
@@ -202,7 +279,7 @@ func (c *Config) Validate() error {
 
 	// Check JWT secret key when using JWT style
 	if c.TokenStyle == TokenStyleJWT && c.JwtSecretKey == "" {
-		return fmt.Errorf("jwtSecretKey is required when TokenStyle is JWT")
+		return fmt.Errorf("JwtSecretKey is required when TokenStyle is JWT")
 	}
 
 	// Check Timeout
@@ -210,68 +287,65 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("timeout must be >= -1, got: %d", c.Timeout)
 	}
 	if c.RefreshTimeout < NoLimit {
-		return fmt.Errorf("refreshTimeout must be >= -1, got: %d", c.RefreshTimeout)
+		return fmt.Errorf("refresh timeout must be >= -1, got: %d", c.RefreshTimeout)
 	}
 
 	// Check MaxRefresh
 	if c.MaxRefresh < NoLimit {
-		return fmt.Errorf("maxRefresh must be >= -1, got: %d", c.MaxRefresh)
+		return fmt.Errorf("MaxRefresh must be >= -1, got: %d", c.MaxRefresh)
 	}
 
 	// Adjust MaxRefresh if it exceeds Timeout | 如果 MaxRefresh 大于 Timeout，则自动调整为 Timeout/2
 	if c.Timeout != NoLimit && c.MaxRefresh > c.Timeout {
-		c.MaxRefresh = c.Timeout / 2
-		if c.MaxRefresh < 1 {
-			c.MaxRefresh = 1
-		}
+		c.MaxRefresh = max(c.Timeout/2, 1)
 	}
 
 	// Check RenewInterval
 	if c.RenewInterval < NoLimit {
-		return fmt.Errorf("renewInterval must be >= -1, got: %d", c.RenewInterval)
+		return fmt.Errorf("RenewInterval must be >= -1, got: %d", c.RenewInterval)
 	}
 
 	// Check ActiveTimeout
 	if c.ActiveTimeout < NoLimit {
-		return fmt.Errorf("activeTimeout must be >= -1, got: %d", c.ActiveTimeout)
+		return fmt.Errorf("ActiveTimeout must be >= -1, got: %d", c.ActiveTimeout)
 	}
 
 	// Check MaxLoginCount
 	if c.MaxLoginCount < NoLimit {
-		return fmt.Errorf("maxLoginCount must be >= -1, got: %d", c.MaxLoginCount)
+		return fmt.Errorf("MaxLoginCount must be >= -1, got: %d", c.MaxLoginCount)
 	}
 
 	// Check if at least one read source is enabled
-	if !c.IsReadHeader && !c.IsReadCookie && !c.IsReadBody {
-		return fmt.Errorf("at least one of IsReadHeader, IsReadCookie, or IsReadBody must be true")
+	if !c.IsReadHeader && !c.IsReadCookie && !c.IsReadBody && !c.IsReadQuery {
+		return fmt.Errorf("at least one of IsReadHeader, IsReadCookie, IsReadBody, or IsReadQuery must be true")
 	}
 
 	// Validate RenewPoolConfig if set | 如果设置了续期池配置，进行验证
 	if c.RenewPoolConfig != nil {
 		// Check MinSize and MaxSize | 检查最小和最大协程池大小
 		if c.RenewPoolConfig.MinSize <= 0 {
-			return fmt.Errorf("renewPoolConfig.MinSize must be > 0") // 最小协程池大小必须大于0
+			return fmt.Errorf("RenewPoolConfig.MinSize must be > 0") // 最小协程池大小必须大于0
 		}
 		if c.RenewPoolConfig.MaxSize < c.RenewPoolConfig.MinSize {
-			return fmt.Errorf("renewPoolConfig.MaxSize must be >= renewPoolConfig.MinSize") // 最大协程池大小必须大于等于最小协程池大小
+			return fmt.Errorf("RenewPoolConfig.MaxSize must be >= RenewPoolConfig.MinSize") // 最大协程池大小必须大于等于最小协程池大小
 		}
 
 		// Check ScaleUpRate and ScaleDownRate | 检查扩容和缩容阈值
 		if c.RenewPoolConfig.ScaleUpRate <= 0 || c.RenewPoolConfig.ScaleUpRate > 1 {
-			return fmt.Errorf("renewPoolConfig.ScaleUpRate must be between 0 and 1") // 扩容阈值必须在0和1之间
+			return fmt.Errorf("RenewPoolConfig.ScaleUpRate must be between 0 and 1") // 扩容阈值必须在0和1之间
 		}
 		if c.RenewPoolConfig.ScaleDownRate < 0 || c.RenewPoolConfig.ScaleDownRate > 1 {
-			return fmt.Errorf("renewPoolConfig.ScaleDownRate must be between 0 and 1") // 缩容阈值必须在0和1之间
+			return fmt.Errorf("RenewPoolConfig.ScaleDownRate must be between 0 and 1") // 缩容阈值必须在0和1之间
 		}
 
 		// Check CheckInterval | 检查检查间隔
 		if c.RenewPoolConfig.CheckInterval <= 0 {
-			return fmt.Errorf("renewPoolConfig.CheckInterval must be a positive duration") // 检查间隔必须是一个正值
+			return fmt.Errorf("RenewPoolConfig.CheckInterval must be a positive duration") // 检查间隔必须是一个正值
 		}
 
 		// Check Expiry | 检查过期时间
 		if c.RenewPoolConfig.Expiry <= 0 {
-			return fmt.Errorf("renewPoolConfig.Expiry must be a positive duration") // 过期时间必须是正值
+			return fmt.Errorf("RenewPoolConfig.Expiry must be a positive duration") // 过期时间必须是正值
 		}
 	}
 
@@ -285,7 +359,27 @@ func (c *Config) Clone() *Config {
 		cookieConfig := *c.CookieConfig
 		newConfig.CookieConfig = &cookieConfig
 	}
+	if c.SsoServer != nil {
+		ss := *c.SsoServer
+		newConfig.SsoServer = &ss
+	}
+	if c.SsoClient != nil {
+		sc := *c.SsoClient
+		newConfig.SsoClient = &sc
+	}
+	if c.OAuth2Server != nil {
+		o2 := *c.OAuth2Server
+		newConfig.OAuth2Server = &o2
+	}
 	return &newConfig
+}
+
+// EffectiveLoginType returns configured LoginType or default "login" | 返回生效的 LoginType
+func (c *Config) EffectiveLoginType() string {
+	if c == nil || c.LoginType == "" {
+		return "login"
+	}
+	return c.LoginType
 }
 
 // SetTokenName Set Token name | 设置Token名称
@@ -297,6 +391,12 @@ func (c *Config) SetTokenName(name string) *Config {
 // SetTimeout Set timeout duration | 设置超时时间
 func (c *Config) SetTimeout(timeout int64) *Config {
 	c.Timeout = timeout
+	return c
+}
+
+// SetRefreshTimeout Set refresh token timeout duration | 设置刷新令牌超时时间
+func (c *Config) SetRefreshTimeout(timeout int64) *Config {
+	c.RefreshTimeout = timeout
 	return c
 }
 
@@ -351,6 +451,12 @@ func (c *Config) SetIsReadHeader(isReadHeader bool) *Config {
 // SetIsReadCookie Set whether to read Token from cookie | 设置是否从Cookie读取Token
 func (c *Config) SetIsReadCookie(isReadCookie bool) *Config {
 	c.IsReadCookie = isReadCookie
+	return c
+}
+
+// SetIsReadQuery Set whether to read Token from query | 设置是否从Query读取Token
+func (c *Config) SetIsReadQuery(isReadQuery bool) *Config {
+	c.IsReadQuery = isReadQuery
 	return c
 }
 

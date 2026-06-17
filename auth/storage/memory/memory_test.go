@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -64,4 +66,52 @@ func TestSetKeepTTL(t *testing.T) {
 
 	// 注意：Memory实现中，过期检查是在访问时进行的，而不是通过后台任务
 	// 因此我们无法可靠地测试已过期键的情况，这里只测试键不存在的情况
+}
+
+func TestConcurrentReadAndRenewPaths(t *testing.T) {
+	storage := NewStorage()
+	key := "race_key"
+
+	if err := storage.Set(key, "initial", time.Minute); err != nil {
+		t.Fatalf("Failed to seed key: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	reader := func(fn func()) {
+		defer wg.Done()
+		<-start
+		for range 1000 {
+			fn()
+		}
+	}
+
+	wg.Add(4)
+	go reader(func() {
+		_, _ = storage.Get(key)
+	})
+	go reader(func() {
+		_ = storage.Exists(key)
+	})
+	go reader(func() {
+		_, _ = storage.TTL(key)
+	})
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := range 1000 {
+			if err := storage.SetKeepTTL(key, fmt.Sprintf("value-%d", i)); err != nil {
+				t.Errorf("SetKeepTTL failed: %v", err)
+				return
+			}
+			if err := storage.Expire(key, time.Minute); err != nil {
+				t.Errorf("Expire failed: %v", err)
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
 }

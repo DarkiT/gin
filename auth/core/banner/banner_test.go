@@ -20,15 +20,11 @@ func captureOutput(f func()) string {
 
 	f()
 
-	if err := w.Close(); err != nil {
-		panic(err)
-	}
+	w.Close()
 	os.Stdout = old
 
 	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		panic(err)
-	}
+	io.Copy(&buf, r)
 	return buf.String()
 }
 

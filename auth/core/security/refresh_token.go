@@ -161,14 +161,7 @@ func (rtm *RefreshTokenManager) RefreshAccessToken(refreshToken string) (*Refres
 	}
 
 	// Convert to RefreshTokenInfo | 转换为 RefreshTokenInfo
-	dataBytes, err := utils.ToBytes(data)
-	if err != nil {
-		return nil, ErrInvalidRefreshData
-	}
-
-	// Unmarshal data | 反序列化数据
-	oldInfo := &RefreshTokenInfo{}
-	err = oldInfo.UnmarshalBinary(dataBytes)
+	oldInfo, err := decodeRefreshTokenInfo(data)
 	if err != nil {
 		return nil, ErrInvalidRefreshData
 	}
@@ -244,13 +237,7 @@ func (rtm *RefreshTokenManager) GetRefreshTokenInfo(refreshToken string) (*Refre
 		return nil, ErrInvalidRefreshToken
 	}
 
-	dataBytes, err := utils.ToBytes(data)
-	if err != nil {
-		return nil, ErrInvalidRefreshData
-	}
-
-	info := &RefreshTokenInfo{}
-	err = info.UnmarshalBinary(dataBytes)
+	info, err := decodeRefreshTokenInfo(data)
 	if err != nil {
 		return nil, ErrInvalidRefreshData
 	}
@@ -281,4 +268,28 @@ func (rtm *RefreshTokenManager) getTokenKey(tokenValue string) string {
 // getAccountKey Gets storage key for account mapping | 获取账号映射存储键
 func (rtm *RefreshTokenManager) getAccountKey(loginID, device string) string {
 	return rtm.keyPrefix + accountKeySuffix + loginID + deviceSeparator + device
+}
+
+func decodeRefreshTokenInfo(data any) (*RefreshTokenInfo, error) {
+	switch v := data.(type) {
+	case *RefreshTokenInfo:
+		if v == nil {
+			return nil, nil
+		}
+		info := *v
+		return &info, nil
+	case RefreshTokenInfo:
+		info := v
+		return &info, nil
+	default:
+		dataBytes, err := utils.ToBytes(data)
+		if err != nil {
+			return nil, err
+		}
+		info := &RefreshTokenInfo{}
+		if err := info.UnmarshalBinary(dataBytes); err != nil {
+			return nil, err
+		}
+		return info, nil
+	}
 }

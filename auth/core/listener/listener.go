@@ -2,6 +2,7 @@ package listener
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 )
@@ -18,6 +19,9 @@ const (
 
 	// EventKickout fired when a user is forcibly logged out | 用户被踢下线事件
 	EventKickout Event = "kickout"
+
+	// EventReplaced fired when a token is overrun-logged-out (BE_REPLACED) | 顶号下线事件
+	EventReplaced Event = "replaced"
 
 	// EventDisable fired when an account is disabled | 账号被禁用事件
 	EventDisable Event = "disable"
@@ -167,12 +171,8 @@ func (m *Manager) GetStats() EventStats {
 		LastTriggered:  make(map[Event]time.Time),
 	}
 
-	for event, count := range m.stats.EventCounts {
-		stats.EventCounts[event] = count
-	}
-	for event, t := range m.stats.LastTriggered {
-		stats.LastTriggered[event] = t
-	}
+	maps.Copy(stats.EventCounts, m.stats.EventCounts)
+	maps.Copy(stats.LastTriggered, m.stats.LastTriggered)
 
 	return stats
 }
