@@ -3,6 +3,7 @@ package gin
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -279,9 +280,7 @@ func (r *RegexRouter) Match(method, path string) (HandlerFunc, map[string]string
 	}
 
 	params := make(map[string]string, len(result.params))
-	for key, value := range result.params {
-		params[key] = value
-	}
+	maps.Copy(params, result.params)
 	r.root().paramsPool.Put(result.params)
 
 	return result.handler, params, true
@@ -367,9 +366,12 @@ func methodNames(methods []methodTyp) []string {
 	return allowed
 }
 
-// NotFound 设置真正的 404 处理器。
+// NotFound 设置真正的 404 处理器。并发安全：写入持 root 写锁，与 Handler() 的读取互斥。
 func (r *RegexRouter) NotFound(handler HandlerFunc) {
-	r.root().notFound = handler
+	root := r.root()
+	root.mu.Lock()
+	root.notFound = handler
+	root.mu.Unlock()
 }
 
 // Handler 返回用于 NoRoute 的处理器函数。
@@ -389,7 +391,14 @@ func (r *RegexRouter) Handler() HandlerFunc {
 			return
 		}
 
-		r.root().notFound(c)
+		// 持读锁取出 notFound，与 NotFound() 的写入互斥，避免并发 data race。
+		root := r.root()
+		root.mu.RLock()
+		notFound := root.notFound
+		root.mu.RUnlock()
+		if notFound != nil {
+			notFound(c)
+		}
 	}
 }
 

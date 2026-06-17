@@ -373,6 +373,13 @@ func (n *node) FindRoute(rctx *routeContext, method methodTyp, path string) (*no
 	return rn, rn.endpoints, nil
 }
 
+// findRoute 在路由树中递归匹配 path，命中时返回叶子节点（移植自 chi 的核心匹配算法）。
+//
+// 关键不变量（维护时务必遵守）：
+//   - 按节点类型顺序匹配：static → param → regexp → catch-all，static 优先保证最长前缀精确匹配；
+//   - search 是「剩余待匹配路径」，每下沉一层裁掉已匹配前缀；递归失败时必须保持 search/rctx 可回溯；
+//   - rctx.routeParams 在递归中累加参数，匹配失败回溯时由调用方截断（prevlen/prevKeysLen 记录回溯点）；
+//   - 仅在叶子节点（search 耗尽）且方法匹配时才算命中，否则继续尝试兄弟节点。
 func (n *node) findRoute(rctx *routeContext, method methodTyp, path string) *node {
 	nn := n
 	search := path

@@ -53,6 +53,30 @@ func TestContextRequestInfo(t *testing.T) {
 	}
 }
 
+func TestContextGetIPHonorsTrustedProxies(t *testing.T) {
+	app := engine.New()
+	if err := app.SetTrustedProxies(nil); err != nil {
+		t.Fatalf("set trusted proxies: %v", err)
+	}
+
+	var got string
+	app.GET("/", func(c *engine.Context) {
+		got = c.GetIP()
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("X-Real-IP", "198.51.100.7")
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, req)
+
+	if got != "192.0.2.10" {
+		t.Fatalf("GetIP should ignore spoofable headers without trusted proxy, got %q", got)
+	}
+}
+
 func TestContextImplementsStdContextAfterRequestRelease(t *testing.T) {
 	reqCtx, cancel := stdcontext.WithCancel(stdcontext.WithValue(stdcontext.Background(), "trace_id", "trace-001"))
 	defer cancel()
@@ -81,6 +105,21 @@ func TestContextImplementsStdContextAfterRequestRelease(t *testing.T) {
 	}
 	if value := ctx.Value("trace_id"); value != "trace-001" {
 		t.Fatalf("unexpected context value: %v", value)
+	}
+}
+
+func TestContextValueKeepsGinCompatibility(t *testing.T) {
+	ctx, _ := newTestContext(t, http.MethodGet, "/", "")
+	ctx.Set("user_id", "u-1")
+
+	if value := ctx.Value("user_id"); value != "u-1" {
+		t.Fatalf("expected gin context key value, got %v", value)
+	}
+	if value := ctx.Value(gin.ContextRequestKey); value != ctx.Request {
+		t.Fatalf("expected request from gin ContextRequestKey")
+	}
+	if value := ctx.Value(gin.ContextKey); value != ctx.Context {
+		t.Fatalf("expected raw gin context from gin ContextKey, got %T", value)
 	}
 }
 
@@ -328,6 +367,26 @@ func TestSetCookieWithOptions(t *testing.T) {
 	}
 	if values[0] == "" {
 		t.Fatalf("empty Set-Cookie header")
+	}
+}
+
+func TestSetCookieWithOptionsDoesNotLeakSameSite(t *testing.T) {
+	ctx, _ := newTestContext(t, http.MethodGet, "/", "")
+	ctx.SetCookieWithOptions("a", "one value", engine.CookieOptions{SameSite: http.SameSiteStrictMode})
+	ctx.SetCookieWithOptions("b", "two value", engine.CookieOptions{})
+
+	values := ctx.Writer.Header().Values("Set-Cookie")
+	if len(values) != 2 {
+		t.Fatalf("expected 2 Set-Cookie headers, got %d", len(values))
+	}
+	if !strings.Contains(values[0], "SameSite=Strict") {
+		t.Fatalf("first cookie should be SameSite=Strict: %q", values[0])
+	}
+	if strings.Contains(values[1], "SameSite=") {
+		t.Fatalf("second cookie should not inherit SameSite: %q", values[1])
+	}
+	if !strings.Contains(values[0], "one+value") || !strings.Contains(values[1], "two+value") {
+		t.Fatalf("cookie values should follow gin url escaping: %#v", values)
 	}
 }
 
@@ -724,6 +783,12 @@ func TestTooManyRequests(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", w.Code)
 	}
+
+	ctx, w = newTestContext(t, http.MethodGet, "/", "")
+	ctx.TooManyRequests()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected default 429, got %d", w.Code)
+	}
 }
 
 // ============================================================
@@ -737,6 +802,11 @@ func TestGetBearerToken(t *testing.T) {
 	token := ctx.GetBearerToken()
 	if token != "abc123" {
 		t.Fatalf("expected abc123, got %s", token)
+	}
+
+	ctx.Request.Header.Set("Authorization", "bearer   spaced")
+	if token := ctx.GetBearerToken(); token != "spaced" {
+		t.Fatalf("expected case-insensitive bearer token, got %q", token)
 	}
 
 	// 无 Bearer 前缀
@@ -1032,7 +1102,7 @@ func TestIsMultipart(t *testing.T) {
 
 func TestIsWebSocket(t *testing.T) {
 	ctx, _ := newTestContext(t, http.MethodGet, "/", "")
-	ctx.Request.Header.Set("Connection", "Upgrade")
+	ctx.Request.Header.Set("Connection", "keep-alive, Upgrade")
 	ctx.Request.Header.Set("Upgrade", "websocket")
 
 	if !ctx.IsWebSocket() {

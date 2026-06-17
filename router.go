@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"maps"
 	"mime"
 	"net/http"
 	"path"
@@ -735,7 +736,7 @@ func (s *SwaggerRouteInfo) Param(name, in, typ, desc string, required bool) *Swa
 }
 
 // ParamModel 添加带模型的参数定义（用于 body 参数）。
-func (s *SwaggerRouteInfo) ParamModel(name, in, desc string, required bool, model interface{}) *SwaggerRouteInfo {
+func (s *SwaggerRouteInfo) ParamModel(name, in, desc string, required bool, model any) *SwaggerRouteInfo {
 	s.params = append(s.params, swagger.ParamDoc{
 		Name:        name,
 		In:          in,
@@ -748,7 +749,7 @@ func (s *SwaggerRouteInfo) ParamModel(name, in, desc string, required bool, mode
 }
 
 // Response 添加响应定义。
-func (s *SwaggerRouteInfo) Response(code int, desc string, model ...interface{}) *SwaggerRouteInfo {
+func (s *SwaggerRouteInfo) Response(code int, desc string, model ...any) *SwaggerRouteInfo {
 	resp := s.responses[code]
 	resp.Description = desc
 	if len(model) > 0 && model[0] != nil {
@@ -887,8 +888,6 @@ func cloneSwaggerExamples(examples map[string]swagger.Example) map[string]swagge
 	}
 
 	cloned := make(map[string]swagger.Example, len(examples))
-	for name, example := range examples {
-		cloned[name] = example
-	}
+	maps.Copy(cloned, examples)
 	return cloned
 }

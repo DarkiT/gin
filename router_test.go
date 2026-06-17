@@ -30,7 +30,8 @@ func TestRouterMethods_VariadicHandlers(t *testing.T) {
 	r := e.Router()
 
 	called := make([]string, 0, 5)
-	r.GET("/chain",
+	r.GET(
+		"/chain",
 		func(c *engine.Context) {
 			called = append(called, "mw1-before")
 			c.Header("X-MW-1", "1")
@@ -77,7 +78,8 @@ func TestRouterMethods_AutoRegexRoute(t *testing.T) {
 	e := engine.New()
 	r := e.Router()
 
-	r.GET("/users/{id:[0-9]+}",
+	r.GET(
+		"/users/{id:[0-9]+}",
 		func(c *engine.Context) {
 			c.Header("X-Regex-Before", "1")
 			c.Header("X-Regex-MW", "1")
@@ -204,7 +206,8 @@ func TestRouterGroupAndUse(t *testing.T) {
 func TestRouterGroup_VariadicHandlers(t *testing.T) {
 	e := engine.New()
 	r := e.Router()
-	g := r.Group("/v1",
+	g := r.Group(
+		"/v1",
 		func(c *engine.Context) {
 			c.Header("X-Group-Before", "1")
 			c.Next()
@@ -213,7 +216,8 @@ func TestRouterGroup_VariadicHandlers(t *testing.T) {
 	)
 
 	order := make([]string, 0, 3)
-	g.GET("/items",
+	g.GET(
+		"/items",
 		func(c *engine.Context) {
 			order = append(order, "route-before")
 			c.Next()

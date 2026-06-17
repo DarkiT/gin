@@ -2,8 +2,6 @@
 package gin
 
 import (
-	"net/http"
-
 	"github.com/darkit/gin/pkg/websocket"
 	ws "github.com/gorilla/websocket"
 )
@@ -23,12 +21,9 @@ func (c *Context) UpgradeWebSocket(userID string, opts ...websocket.WSOption) (*
 	upgrader := ws.Upgrader{
 		ReadBufferSize:  options.ReadBufferSize(),
 		WriteBufferSize: options.WriteBufferSize(),
-		CheckOrigin: func(r *http.Request) bool {
-			if options.CheckOrigin() != nil {
-				return options.CheckOrigin()(r)
-			}
-			return true
-		},
+	}
+	if options.CheckOrigin() != nil {
+		upgrader.CheckOrigin = options.CheckOrigin()
 	}
 
 	// 升级连接

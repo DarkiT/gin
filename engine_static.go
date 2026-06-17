@@ -73,9 +73,12 @@ func (e *Engine) trackStaticStopper(stopper staticStopper) {
 	if e == nil || stopper == nil {
 		return
 	}
-	e.OnStopped(func(context.Context) error {
-		stopper.Stop()
-		return nil
+	e.resources.register(managedResource{
+		name: "static-stopper",
+		stop: func(context.Context, *Engine) error {
+			stopper.Stop()
+			return nil
+		},
 	})
 }
 

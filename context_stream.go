@@ -80,8 +80,8 @@ func (c *Context) SSEComment(comment string) error {
 	}
 
 	c.BeginSSE()
-	lines := strings.Split(strings.ReplaceAll(comment, "\r\n", "\n"), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(strings.ReplaceAll(comment, "\r\n", "\n"), "\n")
+	for line := range lines {
 		if _, err := io.WriteString(c.Writer, ":"+line+"\n"); err != nil {
 			return err
 		}

@@ -1,7 +1,9 @@
 package gin_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -27,7 +29,7 @@ func TestEngineDefaults(t *testing.T) {
 
 func TestEngineWithLoggerCache(t *testing.T) {
 	e := engine.New()
-	c := cache.NewMemoryCache()
+	c := cache.NewMemory()
 	e.WithLogger(testLogger{}).WithCache(c)
 	if readLogger(e) == nil || readCache(e) == nil {
 		t.Fatalf("with logger/cache failed")
@@ -47,7 +49,8 @@ func TestEngineRouterAndHandle(t *testing.T) {
 	}
 
 	order := make([]string, 0, 3)
-	e.GET("/chain",
+	e.GET(
+		"/chain",
 		func(c *engine.Context) {
 			order = append(order, "before")
 			c.Next()
@@ -95,7 +98,8 @@ func TestEngineGroup(t *testing.T) {
 		c.Header("X-Group-After", "1")
 	})
 	order := make([]string, 0, 3)
-	g.GET("/ping",
+	g.GET(
+		"/ping",
 		func(c *engine.Context) {
 			order = append(order, "route-before")
 			c.Next()
@@ -133,7 +137,8 @@ func TestEngineRegexRoute_VariadicHandlers(t *testing.T) {
 	e := engine.New()
 	order := make([]string, 0, 3)
 
-	e.GET("/users/{id:[0-9]+}",
+	e.GET(
+		"/users/{id:[0-9]+}",
 		func(c *engine.Context) {
 			order = append(order, "before")
 			c.Next()
@@ -402,4 +407,27 @@ func assertRouteExists(t *testing.T, routes gin.RoutesInfo, method, routePath st
 		}
 	}
 	t.Fatalf("route %s %s not found", method, routePath)
+}
+
+func TestEngineShutdownClosesCache(t *testing.T) {
+	c := cache.NewMemory(cache.WithCleanupInterval(0))
+	e := engine.New(engine.WithCache(c))
+	e.GET("/cache-lifecycle", func(c *engine.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/cache-lifecycle", nil)
+	e.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if err := e.Shutdown(context.TODO()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if err := c.Set(context.Background(), "k", []byte("v"), 0); !errors.Is(err, cache.ErrClosed) {
+		t.Fatalf("cache Set after shutdown error = %v, want ErrClosed", err)
+	}
+	if readCache(e) == nil {
+		t.Fatalf("engine cache should remain a non-nil closed sentinel after shutdown")
+	}
 }

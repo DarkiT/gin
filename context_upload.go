@@ -3,6 +3,7 @@ package gin
 
 import (
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 type effectiveUploadConfig struct {
 	dir          string
+	subDir       string
 	maxSize      int64
 	ext          []string
 	filename     string
@@ -46,29 +48,41 @@ func (c *Context) mergeUploadOptions(opts ...UploadOption) *effectiveUploadConfi
 		ext = applied.exts
 	}
 
+	fileNameFunc := cfg.FileNameFunc
+	if applied.nameFunc != nil {
+		fileNameFunc = applied.nameFunc
+	}
+
 	return &effectiveUploadConfig{
 		dir:          dir,
+		subDir:       applied.subDir,
 		maxSize:      maxSize,
 		ext:          ext,
 		filename:     applied.filename,
-		fileNameFunc: cfg.FileNameFunc,
+		fileNameFunc: fileNameFunc,
 	}
 }
 
-func (c *Context) buildUploadResult(header *multipart.FileHeader, dir, savedName string) *UploadResult {
+func (c *Context) buildUploadResult(header *multipart.FileHeader, target *uploadTarget) *UploadResult {
 	return &UploadResult{
 		OriginalName: header.Filename,
-		SavedName:    savedName,
-		Path:         filepath.Join(dir, savedName),
+		SavedName:    target.savedName,
+		Path:         target.path,
+		RelativePath: target.relativePath,
 		Size:         header.Size,
 		Ext:          normalizeExt(filepath.Ext(header.Filename)),
 		MimeType:     header.Header.Get("Content-Type"),
 	}
 }
 
-func (c *Context) saveFileHeader(header *multipart.FileHeader, opts ...UploadOption) (*UploadResult, error) {
-	cfg := c.mergeUploadOptions(opts...)
+type uploadTarget struct {
+	dir          string
+	savedName    string
+	path         string
+	relativePath string
+}
 
+func (c *Context) resolveUploadTarget(header *multipart.FileHeader, cfg *effectiveUploadConfig) (*uploadTarget, error) {
 	if err := validateFileSize(header.Size, cfg.maxSize); err != nil {
 		return nil, err
 	}
@@ -80,6 +94,11 @@ func (c *Context) saveFileHeader(header *multipart.FileHeader, opts ...UploadOpt
 	if dir == "" {
 		dir = os.TempDir()
 	}
+	rootDir := filepath.Clean(dir)
+	dir, err := resolveUploadDir(rootDir, cfg.subDir)
+	if err != nil {
+		return nil, err
+	}
 
 	savedName := cfg.filename
 	if savedName == "" {
@@ -89,16 +108,48 @@ func (c *Context) saveFileHeader(header *multipart.FileHeader, opts ...UploadOpt
 		}
 		savedName = nameFunc(header.Filename)
 	}
-
-	dst := filepath.Join(dir, savedName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := validateUploadName(savedName); err != nil {
 		return nil, err
 	}
-	if err := c.SaveUploadedFile(header, dst); err != nil {
+	if err := validateFileExt(savedName, cfg.ext); err != nil {
 		return nil, err
 	}
 
-	return c.buildUploadResult(header, dir, savedName), nil
+	fullPath := filepath.Join(dir, savedName)
+	relativePath, err := filepath.Rel(rootDir, fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &uploadTarget{
+		dir:          dir,
+		savedName:    savedName,
+		path:         fullPath,
+		relativePath: filepath.ToSlash(relativePath),
+	}, nil
+}
+
+func (c *Context) persistUploadTarget(header *multipart.FileHeader, target *uploadTarget) error {
+	if err := os.MkdirAll(target.dir, 0o755); err != nil {
+		return err
+	}
+	if err := c.SaveUploadedFile(header, target.path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Context) saveFileHeader(header *multipart.FileHeader, opts ...UploadOption) (*UploadResult, error) {
+	cfg := c.mergeUploadOptions(opts...)
+	target, err := c.resolveUploadTarget(header, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.persistUploadTarget(header, target); err != nil {
+		return nil, err
+	}
+
+	return c.buildUploadResult(header, target), nil
 }
 
 // SaveFile 保存单个文件，formKey 为表单字段名。
@@ -125,13 +176,28 @@ func (c *Context) SaveFiles(formKey string, opts ...UploadOption) ([]*UploadResu
 		return nil, ErrFileNotFound
 	}
 
-	results := make([]*UploadResult, 0, len(files))
+	cfg := c.mergeUploadOptions(opts...)
+	targets := make([]*uploadTarget, 0, len(files))
+	seen := make(map[string]struct{}, len(files))
 	for _, fileHeader := range files {
-		result, err := c.saveFileHeader(fileHeader, opts...)
+		target, err := c.resolveUploadTarget(fileHeader, cfg)
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, result)
+		if _, exists := seen[target.path]; exists {
+			return nil, fmt.Errorf("%w: %s", ErrDuplicateUploadTarget, target.path)
+		}
+		seen[target.path] = struct{}{}
+		targets = append(targets, target)
+	}
+
+	results := make([]*UploadResult, 0, len(files))
+	for idx, fileHeader := range files {
+		target := targets[idx]
+		if err := c.persistUploadTarget(fileHeader, target); err != nil {
+			return nil, err
+		}
+		results = append(results, c.buildUploadResult(fileHeader, target))
 	}
 	return results, nil
 }
@@ -147,10 +213,7 @@ func (c *Context) ValidateFile(formKey string, opts ...UploadOption) (*multipart
 	}
 
 	cfg := c.mergeUploadOptions(opts...)
-	if err := validateFileSize(fileHeader.Size, cfg.maxSize); err != nil {
-		return nil, err
-	}
-	if err := validateFileExt(fileHeader.Filename, cfg.ext); err != nil {
+	if _, err := c.resolveUploadTarget(fileHeader, cfg); err != nil {
 		return nil, err
 	}
 	return fileHeader, nil

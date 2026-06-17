@@ -331,7 +331,7 @@ func TestRegexRouter_Concurrency(t *testing.T) {
 	concurrency := 100
 
 	// 并发注册路由
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -345,7 +345,7 @@ func TestRegexRouter_Concurrency(t *testing.T) {
 	wg.Wait()
 
 	// 并发匹配路由
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()

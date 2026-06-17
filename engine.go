@@ -3,10 +3,10 @@ package gin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/darkit/gin/auth"
@@ -30,13 +30,17 @@ type Config struct {
 type Engine struct {
 	*gin.Engine
 	config               *Config
+	startupTimeout       time.Duration
 	logger               logger.Logger
 	cache                cache.Cache
 	lifecycle            *lifecycle.Manager
+	resources            *resourceCoordinator
 	middleware           *middlewareRegistry
 	uploadConfig         *UploadConfig
 	mailConfig           mail.MailConfig
 	smsConfig            sms.SMSConfig
+	mailer               *mail.Mailer
+	smsService           *sms.Service
 	authManager          *auth.Manager          // 认证管理器
 	authConfig           *auth.AuthConfig       // 认证配置
 	regexRouter          *RegexRouter           // 正则路由器,通过 NoRoute 集成
@@ -46,7 +50,6 @@ type Engine struct {
 	swaggerEnabled       bool                   // 是否启用 Swagger
 	swaggerConfig        *swagger.SwaggerConfig // Swagger 配置
 	swaggerRoutes        []*SwaggerRouteInfo    // Swagger 路由信息
-	contextPool          sync.Pool              // Context 对象池
 }
 
 // New 创建带默认配置的 Engine，可通过 opts 覆盖。
@@ -58,20 +61,20 @@ func New(opts ...OptionFunc) *Engine {
 			Addr: ":8080",
 		},
 		logger:       logger.NewNoop(),
-		cache:        cache.NewMemoryCache(),
+		cache:        cache.NewMemory(),
 		lifecycle:    lifecycle.NewManager(),
+		resources:    newResourceCoordinator(),
 		middleware:   newMiddlewareRegistry(),
 		uploadConfig: DefaultUploadConfig(),
 		mailConfig:   mail.MailConfig{},
 		smsConfig:    sms.SMSConfig{},
-		contextPool: sync.Pool{
-			New: func() any {
-				return &Context{}
-			},
-		},
 	}
 	e.ContextWithFallback = true
 	e.MaxMultipartMemory = e.uploadConfig.MaxMultipartMemory
+	registerCacheResource(e)
+	registerAuthResource(e)
+	registerMailResource(e)
+	registerSMSResource(e)
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -145,6 +148,10 @@ func (e *Engine) Run(addr ...string) error {
 		address = addr[0]
 	}
 
+	if err := e.ensureRuntimeReady(context.Background()); err != nil {
+		return err
+	}
+
 	server := &http.Server{
 		Addr:         address,
 		Handler:      e.Engine,
@@ -152,12 +159,40 @@ func (e *Engine) Run(addr ...string) error {
 		WriteTimeout: e.config.WriteTimeout,
 	}
 
-	return e.lifecycle.Run(server, e.Engine)
+	runErr := e.lifecycle.Run(server, e.Engine)
+	stopErr := e.stopManagedResources(context.Background())
+	if runErr != nil && stopErr != nil {
+		return errors.Join(runErr, stopErr)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	return stopErr
 }
 
 // Shutdown 触发优雅关闭。
 func (e *Engine) Shutdown(ctx context.Context) error {
-	return e.lifecycle.Shutdown(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	shutdownErr := e.lifecycle.Shutdown(ctx)
+	stopErr := e.stopManagedResources(ctx)
+	if shutdownErr != nil && stopErr != nil {
+		return errors.Join(shutdownErr, stopErr)
+	}
+	if shutdownErr != nil {
+		return shutdownErr
+	}
+	return stopErr
+}
+
+// ServeHTTP 实现 http.Handler，并在首个请求前确保运行时资源已就绪。
+func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if err := e.ensureRuntimeReady(requestContext(req)); err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	e.Engine.ServeHTTP(w, req)
 }
 
 // OnStart 注册服务启动前回调。
@@ -197,8 +232,33 @@ func (e *Engine) WithLogger(l logger.Logger) *Engine {
 
 // WithCache 设置缓存实现并返回 Engine。
 func (e *Engine) WithCache(c cache.Cache) *Engine {
-	e.cache = c
+	setEngineCache(e, c)
 	return e
+}
+
+// Mailer 返回当前 Engine 作用域内的邮件发送器。
+func (e *Engine) Mailer() (*mail.Mailer, error) {
+	if e != nil && e.mailer != nil {
+		return e.mailer, nil
+	}
+	return nil, mail.ErrMailConfigMissing
+}
+
+// SMS 返回当前 Engine 作用域内的短信服务。
+func (e *Engine) SMS() (*sms.Service, error) {
+	if e != nil && e.smsService != nil {
+		return e.smsService, nil
+	}
+	return nil, sms.ErrSMSNotInitialized
+}
+
+func requestContext(req *http.Request) context.Context {
+	if req != nil {
+		if ctx := req.Context(); ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
 }
 
 func (e *Engine) wrapHandlers(handlers []HandlerFunc) gin.HandlersChain {

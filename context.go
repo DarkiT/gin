@@ -4,13 +4,17 @@ package gin
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/darkit/gin/pkg/cache"
 	"github.com/darkit/gin/pkg/logger"
+	"github.com/darkit/gin/pkg/mail"
+	"github.com/darkit/gin/pkg/sms"
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 )
@@ -37,8 +41,8 @@ func (c *Context) baseContext() context.Context {
 	if c.requestContext != nil {
 		return c.requestContext
 	}
-	if c.Context != nil && c.Context.Request != nil {
-		return c.Context.Request.Context()
+	if c.Context != nil && c.Request != nil {
+		return c.Request.Context()
 	}
 	return context.Background()
 }
@@ -60,6 +64,12 @@ func (c *Context) Err() error {
 
 // Value 实现 context.Context，读取请求上下文中的键值。
 func (c *Context) Value(key any) any {
+	if c == nil {
+		return nil
+	}
+	if c.Context != nil {
+		return c.Context.Value(key)
+	}
 	return c.baseContext().Value(key)
 }
 
@@ -99,18 +109,29 @@ func (c *Context) Handler() HandlerFunc {
 	}
 }
 
-// GetIP 返回客户端真实 IP，优先读取 X-Real-IP/X-Forwarded-For。
+// GetIP 返回客户端真实 IP，遵循 Gin 的 TrustedProxies 与 RemoteIPHeaders 配置。
 func (c *Context) GetIP() string {
-	if ip := c.Request.Header.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
+	if c == nil || c.Context == nil || c.Request == nil {
+		return ""
 	}
-	if ip := c.Request.Header.Get("X-Forwarded-For"); ip != "" {
-		parts := strings.Split(ip, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
-		}
+	if ip := c.ClientIP(); ip != "" {
+		return ip
 	}
-	return c.ClientIP()
+	return fallbackRemoteIP(c.Request.RemoteAddr)
+}
+
+func fallbackRemoteIP(remoteAddr string) string {
+	trimmed := strings.TrimSpace(remoteAddr)
+	if trimmed == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(trimmed); err == nil {
+		return host
+	}
+	if net.ParseIP(trimmed) != nil {
+		return trimmed
+	}
+	return ""
 }
 
 // GetUserAgent 返回请求的 User-Agent。
@@ -398,7 +419,7 @@ func (c *Context) Success(data any) {
 }
 
 // SuccessWithMessage 返回成功响应，同时包含自定义消息。
-func (c *Context) SuccessWithMessage(data interface{}, message string) {
+func (c *Context) SuccessWithMessage(data any, message string) {
 	c.JSON(http.StatusOK, newResponse(http.StatusOK, message, data, c.getRequestID()))
 }
 
@@ -534,11 +555,27 @@ func (c *Context) Cache() cache.Cache {
 	return nil
 }
 
+// Mailer 返回当前 Engine 作用域内的邮件发送器。
+func (c *Context) Mailer() (*mail.Mailer, error) {
+	if c == nil || c.engine == nil {
+		return nil, mail.ErrMailConfigMissing
+	}
+	return c.engine.Mailer()
+}
+
+// SMS 返回当前 Engine 作用域内的短信服务。
+func (c *Context) SMS() (*sms.Service, error) {
+	if c == nil || c.engine == nil {
+		return nil, sms.ErrSMSNotInitialized
+	}
+	return c.engine.SMS()
+}
+
 // SetEngine 设置上下文关联的 Engine。
 func (c *Context) SetEngine(e *Engine) {
 	c.engine = e
-	if c.requestContext == nil && c.Context != nil && c.Context.Request != nil {
-		c.requestContext = c.Context.Request.Context()
+	if c.requestContext == nil && c.Context != nil && c.Request != nil {
+		c.requestContext = c.Request.Context()
 	}
 }
 
@@ -604,7 +641,7 @@ func (c *Context) GetQueryBool(key string, def ...bool) bool {
 }
 
 // JSONOrAbort 绑定 JSON 并在失败时自动返回 400。
-func (c *Context) JSONOrAbort(obj interface{}) bool {
+func (c *Context) JSONOrAbort(obj any) bool {
 	if err := c.ShouldBindJSON(obj); err != nil {
 		c.BadRequest("请求格式错误: " + err.Error())
 		c.Abort()
@@ -614,7 +651,7 @@ func (c *Context) JSONOrAbort(obj interface{}) bool {
 }
 
 // OKIf 条件响应（条件为真则返回 200，否则返回 404）。
-func (c *Context) OKIf(condition bool, data interface{}, notFoundMsg ...string) {
+func (c *Context) OKIf(condition bool, data any, notFoundMsg ...string) {
 	if condition {
 		c.Success(data)
 		return
@@ -638,14 +675,18 @@ func (c *Context) RedirectTemporary(location string) {
 
 // SetSecureCookie 设置安全 Cookie（HttpOnly + Secure + SameSite）。
 func (c *Context) SetSecureCookie(name, value string, maxAge int) {
-	// 手动构建 Set-Cookie 头以支持 SameSite 属性
-	cookieStr := name + "=" + value
-	cookieStr += "; Path=/"
-	if maxAge > 0 {
-		cookieStr += "; Max-Age=" + strconv.Itoa(maxAge)
+	if c == nil || c.Writer == nil {
+		return
 	}
-	cookieStr += "; Secure; HttpOnly; SameSite=Strict"
-	c.Writer.Header().Add("Set-Cookie", cookieStr)
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     name,
+		Value:    url.QueryEscape(value),
+		Path:     "/",
+		MaxAge:   maxAge,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 // GetCookieOr 获取 Cookie，不存在时返回默认值。
@@ -674,13 +715,22 @@ type CookieOptions struct {
 
 // SetCookieWithOptions 通过选项设置 Cookie。
 func (c *Context) SetCookieWithOptions(name, value string, opts CookieOptions) {
+	if c == nil || c.Writer == nil {
+		return
+	}
 	if opts.Path == "" {
 		opts.Path = "/"
 	}
-	if opts.SameSite != http.SameSiteDefaultMode {
-		c.SetSameSite(opts.SameSite)
-	}
-	c.SetCookie(name, value, opts.MaxAge, opts.Path, opts.Domain, opts.Secure, opts.HttpOnly)
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     name,
+		Value:    url.QueryEscape(value),
+		Path:     opts.Path,
+		Domain:   opts.Domain,
+		MaxAge:   opts.MaxAge,
+		Secure:   opts.Secure,
+		HttpOnly: opts.HttpOnly,
+		SameSite: opts.SameSite,
+	})
 }
 
 // IsMethod 判断请求方法。
@@ -719,7 +769,7 @@ func (c *Context) Negotiate(code int, config Negotiate) {
 }
 
 // AutoNegotiate 根据 Accept 头自动返回 JSON/HTML。
-func (c *Context) AutoNegotiate(data interface{}) {
+func (c *Context) AutoNegotiate(data any) {
 	if c.AcceptsJSON() {
 		c.JSON(http.StatusOK, data)
 	} else if c.AcceptsHTML() {
@@ -759,8 +809,12 @@ func (c *Context) MethodNotAllowed(message string) {
 }
 
 // TooManyRequests 返回 429 请求过多错误（限流场景）。
-func (c *Context) TooManyRequests(message string) {
-	c.JSON(http.StatusTooManyRequests, newErrorResponse(http.StatusTooManyRequests, message, nil, c.getRequestID()))
+func (c *Context) TooManyRequests(message ...string) {
+	msg := http.StatusText(http.StatusTooManyRequests)
+	if len(message) > 0 && message[0] != "" {
+		msg = message[0]
+	}
+	c.JSON(http.StatusTooManyRequests, newErrorResponse(http.StatusTooManyRequests, msg, nil, c.getRequestID()))
 }
 
 // ============================================================
@@ -769,9 +823,16 @@ func (c *Context) TooManyRequests(message string) {
 
 // GetBearerToken 从 Authorization 头获取 Bearer Token（JWT 认证常用）。
 func (c *Context) GetBearerToken() string {
-	auth := c.GetHeader("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return auth[7:]
+	auth := strings.TrimSpace(c.GetHeader("Authorization"))
+	const bearer = "Bearer"
+	if len(auth) > len(bearer) && strings.EqualFold(auth[:len(bearer)], bearer) {
+		if auth[len(bearer)] != ' ' && auth[len(bearer)] != '\t' {
+			return ""
+		}
+		rest := strings.TrimSpace(auth[len(bearer):])
+		if rest != "" {
+			return rest
+		}
 	}
 	return ""
 }
@@ -971,7 +1032,7 @@ func (c *Context) Gone(message string) {
 }
 
 // CreatedWithLocation 返回 201 创建成功响应，并设置 Location 头（REST 规范）。
-func (c *Context) CreatedWithLocation(data interface{}, location string) {
+func (c *Context) CreatedWithLocation(data any, location string) {
 	c.Header("Location", location)
 	c.JSON(http.StatusCreated, newResponse(http.StatusCreated, "created", data, c.getRequestID()))
 }
@@ -994,8 +1055,17 @@ func (c *Context) IsMultipart() bool {
 
 // IsWebSocket 判断是否 WebSocket 升级请求。
 func (c *Context) IsWebSocket() bool {
-	return strings.ToLower(c.GetHeader("Connection")) == "upgrade" &&
-		strings.ToLower(c.GetHeader("Upgrade")) == "websocket"
+	return headerContainsToken(c.GetHeader("Connection"), "upgrade") &&
+		strings.EqualFold(strings.TrimSpace(c.GetHeader("Upgrade")), "websocket")
+}
+
+func headerContainsToken(header, token string) bool {
+	for part := range strings.SplitSeq(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetContentLength 获取请求体大小（Content-Length 头）。
