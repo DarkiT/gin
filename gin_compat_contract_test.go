@@ -1,9 +1,11 @@
 package gin_test
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	darkgin "github.com/darkit/gin"
@@ -22,12 +24,12 @@ func TestCoreInterfacesAreSatisfied(t *testing.T) {
 func TestPackageMiddlewaresReturnLocalHandlerFunc(t *testing.T) {
 	t.Parallel()
 
-	assertSameType(t, reflect.TypeOf(darkgin.Logger()), reflect.TypeOf(darkgin.HandlerFunc(nil)))
-	assertSameType(t, reflect.TypeOf(darkgin.Recovery()), reflect.TypeOf(darkgin.HandlerFunc(nil)))
-	assertSameType(t, reflect.TypeOf(darkgin.BasicAuth(darkgin.Accounts{"u": "p"})), reflect.TypeOf(darkgin.HandlerFunc(nil)))
-	assertSameType(t, reflect.TypeOf(darkgin.WrapF(func(w http.ResponseWriter, r *http.Request) {})), reflect.TypeOf(darkgin.HandlerFunc(nil)))
-	assertSameType(t, reflect.TypeOf(darkgin.WrapH(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))), reflect.TypeOf(darkgin.HandlerFunc(nil)))
-	assertSameType(t, reflect.TypeOf(darkgin.Bind(struct{}{})), reflect.TypeOf(darkgin.HandlerFunc(nil)))
+	assertSameType(t, reflect.TypeOf(darkgin.Logger()), reflect.TypeFor[darkgin.HandlerFunc]())
+	assertSameType(t, reflect.TypeOf(darkgin.Recovery()), reflect.TypeFor[darkgin.HandlerFunc]())
+	assertSameType(t, reflect.TypeOf(darkgin.BasicAuth(darkgin.Accounts{"u": "p"})), reflect.TypeFor[darkgin.HandlerFunc]())
+	assertSameType(t, reflect.TypeOf(darkgin.WrapF(func(w http.ResponseWriter, r *http.Request) {})), reflect.TypeFor[darkgin.HandlerFunc]())
+	assertSameType(t, reflect.TypeOf(darkgin.WrapH(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))), reflect.TypeFor[darkgin.HandlerFunc]())
+	assertSameType(t, reflect.TypeOf(darkgin.Bind(struct{}{})), reflect.TypeFor[darkgin.HandlerFunc]())
 }
 
 func TestCreateTestContextReturnsLocalTypes(t *testing.T) {
@@ -47,6 +49,32 @@ func TestCreateTestContextReturnsLocalTypes(t *testing.T) {
 	c2 := darkgin.CreateTestContextOnly(httptest.NewRecorder(), e)
 	if _, ok := any(c2).(*darkgin.Context); !ok {
 		t.Fatalf("CreateTestContextOnly context type = %T", c2)
+	}
+}
+
+func TestDefaultWriterAssignmentAffectsLogger(t *testing.T) {
+	oldLocal := darkgin.DefaultWriter
+	oldUpstream := upstream.DefaultWriter
+	defer func() {
+		darkgin.DefaultWriter = oldLocal
+		upstream.DefaultWriter = oldUpstream
+	}()
+
+	var buf bytes.Buffer
+	darkgin.DefaultWriter = &buf
+
+	r := darkgin.New()
+	r.Use(darkgin.Logger())
+	r.GET("/ping", func(c *darkgin.Context) {
+		c.String(http.StatusOK, "pong")
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	r.ServeHTTP(w, req)
+
+	if !strings.Contains(buf.String(), "/ping") {
+		t.Fatalf("logger should write to darkgin.DefaultWriter, got %q", buf.String())
 	}
 }
 
@@ -72,11 +100,38 @@ func TestSelectedAliasesStillMatchUpstream(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if tc.local != tc.upstream {
 				t.Fatalf("%s type identity mismatch: local=%s upstream=%s", tc.name, tc.local, tc.upstream)
+			}
+		})
+	}
+}
+
+func TestMappedWrapperTypesKeepCompatibleShape(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		local    reflect.Type
+		upstream reflect.Type
+	}{
+		{name: "Context", local: typeOf[darkgin.Context](), upstream: typeOf[upstream.Context]()},
+		{name: "Engine", local: typeOf[darkgin.Engine](), upstream: typeOf[upstream.Engine]()},
+		{name: "HandlerFunc", local: typeOf[darkgin.HandlerFunc](), upstream: typeOf[upstream.HandlerFunc]()},
+		{name: "OptionFunc", local: typeOf[darkgin.OptionFunc](), upstream: typeOf[upstream.OptionFunc]()},
+		{name: "RouterGroup", local: typeOf[darkgin.RouterGroup](), upstream: typeOf[upstream.RouterGroup]()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.local == tc.upstream {
+				t.Fatalf("%s unexpectedly has upstream type identity; mapped wrapper contract changed", tc.name)
+			}
+			if tc.local.Kind() != tc.upstream.Kind() {
+				t.Fatalf("%s kind mismatch: local=%s upstream=%s", tc.name, tc.local.Kind(), tc.upstream.Kind())
 			}
 		})
 	}
@@ -90,5 +145,5 @@ func assertSameType(t *testing.T, got, want reflect.Type) {
 }
 
 func typeOf[T any]() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
+	return reflect.TypeFor[T]()
 }

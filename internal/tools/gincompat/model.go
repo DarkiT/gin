@@ -50,18 +50,29 @@ type methodReport struct {
 	UpstreamType   string          `json:"upstream_type"`
 	Note           string          `json:"note,omitempty"`
 	SyncedCount    int             `json:"synced_count"`
+	Mapped         []methodFinding `json:"mapped"`
 	Incompatible   []methodFinding `json:"incompatible"`
 	LocalOnly      []methodFinding `json:"local_only"`
 	UpstreamOnly   []methodFinding `json:"upstream_only"`
 }
 
 type report struct {
-	LocalModulePath string          `json:"local_module_path"`
-	LocalPackageDir string          `json:"local_package_dir"`
-	UpstreamModule  string          `json:"upstream_module"`
-	UpstreamVersion string          `json:"upstream_version"`
-	UpstreamDir     string          `json:"upstream_dir"`
-	Package         packageReport   `json:"package"`
-	NamedTypes      namedTypeReport `json:"named_types"`
-	Methods         []methodReport  `json:"methods"`
+	LocalModulePath string             `json:"local_module_path"`
+	LocalPackageDir string             `json:"local_package_dir"`
+	UpstreamModule  string             `json:"upstream_module"`
+	UpstreamVersion string             `json:"upstream_version"`
+	UpstreamDir     string             `json:"upstream_dir"`
+	Package         packageReport      `json:"package"`
+	Subpackages     []subpackageReport `json:"subpackages"`
+	NamedTypes      namedTypeReport    `json:"named_types"`
+	Methods         []methodReport     `json:"methods"`
+}
+
+type subpackageReport struct {
+	Name           string        `json:"name"`
+	LocalImport    string        `json:"local_import"`
+	UpstreamImport string        `json:"upstream_import"`
+	LocalDir       string        `json:"local_dir"`
+	UpstreamDir    string        `json:"upstream_dir"`
+	Package        packageReport `json:"package"`
 }

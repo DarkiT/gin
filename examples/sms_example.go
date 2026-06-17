@@ -26,7 +26,12 @@ func main() {
 		mobile := c.GetString("mobile")
 
 		// 发送验证码（仅生成和存储，不实际发送短信）
-		code, err := sms.SendCode(mobile)
+		service, err := c.SMS()
+		if err != nil {
+			c.ErrorResponse(500, err.Error())
+			return
+		}
+		code, err := service.SendCode(mobile)
 		if err != nil {
 			c.ErrorResponse(400, err.Error())
 			return
@@ -42,9 +47,15 @@ func main() {
 	// 示例3：发送验证码（通过短信发送）
 	app.POST("/api/send-code", func(c *gin.Context) {
 		mobile := c.GetString("mobile")
+		service, err := c.SMS()
+		if err != nil {
+			c.ErrorResponse(500, err.Error())
+			return
+		}
 
 		// 发送验证码并通过短信发送
-		code, err := sms.SendCode(mobile,
+		code, err := service.SendCode(
+			mobile,
 			sms.WithTemplateID("SMS_123456789"), // 短信模板 ID
 			sms.WithCodeLength(6),               // 验证码长度
 			sms.WithCodeExpiry(5*time.Minute),   // 过期时间
@@ -67,9 +78,14 @@ func main() {
 	app.POST("/api/verify-code", func(c *gin.Context) {
 		mobile := c.GetString("mobile")
 		code := c.GetString("code")
+		service, err := c.SMS()
+		if err != nil {
+			c.ErrorResponse(500, err.Error())
+			return
+		}
 
 		// 验证验证码
-		if !sms.VerifyCode(mobile, code) {
+		if !service.VerifyCode(mobile, code) {
 			c.ErrorResponse(400, "验证码错误或已过期")
 			return
 		}
@@ -82,9 +98,15 @@ func main() {
 	// 示例5：自定义验证码类型
 	app.POST("/api/send-alphanumeric-code", func(c *gin.Context) {
 		mobile := c.GetString("mobile")
+		service, err := c.SMS()
+		if err != nil {
+			c.ErrorResponse(500, err.Error())
+			return
+		}
 
 		// 发送字母数字混合验证码
-		code, err := sms.SendCode(mobile,
+		code, err := service.SendCode(
+			mobile,
 			sms.WithCodeType(sms.CodeTypeAlphanumeric),
 			sms.WithCodeLength(8),
 			sms.WithCodeExpiry(10*time.Minute),
@@ -104,9 +126,14 @@ func main() {
 	app.POST("/api/send-sms", func(c *gin.Context) {
 		mobile := c.GetString("mobile")
 		templateID := c.GetString("template_id")
+		service, err := c.SMS()
+		if err != nil {
+			c.ErrorResponse(500, err.Error())
+			return
+		}
 
 		// 发送自定义短信
-		err := sms.SendSMS(mobile, templateID, map[string]string{
+		err = service.Send(mobile, templateID, map[string]string{
 			"name":    "张三",
 			"product": "测试产品",
 		})
@@ -117,26 +144,6 @@ func main() {
 
 		c.Success(gin.H{
 			"message": "短信已发送",
-		})
-	})
-
-	// 示例7：运行时修改短信配置
-	app.POST("/api/update-sms-config", func(c *gin.Context) {
-		newConfig := sms.SMSConfig{
-			Provider:  "tencent",
-			AccessKey: "new-access-key",
-			SecretKey: "new-secret-key",
-			SignName:  "新的短信签名",
-			Region:    "ap-guangzhou",
-		}
-
-		if err := sms.InitDefaultProvider(newConfig); err != nil {
-			c.ErrorResponse(400, err.Error())
-			return
-		}
-
-		c.Success(gin.H{
-			"message": "短信配置已更新",
 		})
 	})
 

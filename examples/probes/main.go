@@ -35,7 +35,8 @@ func main() {
 
 	routes.HealthCheck(r)
 	routes.Liveness(r)
-	routes.Readiness(r,
+	routes.Readiness(
+		r,
 		routes.NamedProbe("database", func(c *gin.Context) error {
 			if !state.databaseReady.Load() {
 				return errors.New("database is not ready")
@@ -49,7 +50,8 @@ func main() {
 			return nil
 		}),
 	)
-	routes.Startup(r,
+	routes.Startup(
+		r,
 		routes.NamedProbe("bootstrap", func(c *gin.Context) error {
 			if !state.started.Load() {
 				return errors.New("application is still starting")

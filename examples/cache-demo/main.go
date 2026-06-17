@@ -43,7 +43,8 @@ func main() {
 	})
 
 	// 示例 4: 自定义缓存键
-	r.GET("/user/profile", middleware.Cache(5*time.Minute,
+	r.GET("/user/profile", middleware.Cache(
+		5*time.Minute,
 		middleware.WithCacheKey(func(c *gin.Context) string {
 			// 根据用户 ID 生成缓存键
 			userID, _ := c.Get("user_id")
@@ -59,7 +60,8 @@ func main() {
 	})
 
 	// 示例 5: 自定义 Cache-Control 和 Vary 头
-	r.GET("/api/content", middleware.Cache(time.Minute,
+	r.GET("/api/content", middleware.Cache(
+		time.Minute,
 		middleware.WithCacheControl("public, max-age=60"),
 		middleware.WithCacheVary("Accept-Language", "Accept-Encoding"),
 	), func(c *gin.Context) {
@@ -80,7 +82,8 @@ func main() {
 
 	// 示例 7: 组合使用 ETag 和缓存
 	// 注意：通常不需要同时使用，选择其中一种即可
-	r.GET("/combined",
+	r.GET(
+		"/combined",
 		middleware.ETag(),
 		middleware.Cache(time.Minute),
 		func(c *gin.Context) {

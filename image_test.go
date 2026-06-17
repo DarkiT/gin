@@ -19,8 +19,8 @@ import (
 func createTestImage(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			img.Set(x, y, color.RGBA{R: 200, G: 100, B: 50, A: 255})
 		}
 	}
@@ -164,7 +164,8 @@ func TestSaveImage_Chain(t *testing.T) {
 	req := newImageUploadRequest(t, "file", "photo.jpg", data)
 	ctx := newImageContext(t, req)
 
-	result, err := ctx.SaveImage("file",
+	result, err := ctx.SaveImage(
+		"file",
 		imagepkg.ResizeWidth(300),
 		imagepkg.Compress(70),
 		imagepkg.WatermarkText("chain", imagepkg.WatermarkTextOptions{Position: "center"}),

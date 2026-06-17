@@ -182,7 +182,8 @@ func main() {
 	// GET /user/by/{uuid}             → User.GetByUUIDRegex (接口配置)
 
 	// ==================== 3. 选项覆盖注册（优先级最高） ====================
-	r.AutoRegister(&Article{},
+	r.AutoRegister(
+		&Article{},
 		gin.WithPrefix("/api/v1/articles"),
 		gin.WithRegexPattern("GetBySlugRegex", "/api/v1/articles/by/{slug:[a-z0-9]+(?:-[a-z0-9]+)*}"),
 		gin.WithRegexPattern("GetByTagRegex", "/api/v1/articles/by/tag/{tag:[a-zA-Z0-9-]+}"),
@@ -192,7 +193,8 @@ func main() {
 	// GET /api/v1/articles/by/tag/{tag:正则}   → Article.GetByTagRegex (选项覆盖)
 
 	// ==================== 4. 带中间件注册 ====================
-	r.AutoRegister(&Admin{},
+	r.AutoRegister(
+		&Admin{},
 		gin.WithMiddleware(authMiddleware, middleware.RateLimit(middleware.RateLimitConfig{
 			RequestsPerSecond: 10,
 			Burst:             20,

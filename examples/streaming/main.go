@@ -113,10 +113,7 @@ func main() {
 			start = findMessageStart(cursorID)
 		}
 
-		end := start + params.Limit
-		if end > len(messages) {
-			end = len(messages)
-		}
+		end := min(start+params.Limit, len(messages))
 
 		chunk := messages[start:end]
 		nextCursor := ""

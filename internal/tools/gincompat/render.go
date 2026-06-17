@@ -30,7 +30,7 @@ func renderMarkdown(rep *report) string {
 			"| %s 方法集 | %d | %d | %d | %d |\n",
 			methodRep.TypeName,
 			methodRep.SyncedCount,
-			len(methodRep.Incompatible),
+			len(methodRep.Mapped),
 			len(methodRep.UpstreamOnly),
 			len(methodRep.LocalOnly),
 		))
@@ -62,6 +62,7 @@ func renderMarkdown(rep *report) string {
 		},
 	)
 	writeTypeSection(&b, "## 同名类型身份差异", rep.NamedTypes.Divergent)
+	writeSubpackageReports(&b, rep.Subpackages)
 
 	for _, methodRep := range rep.Methods {
 		writeMethodReport(&b, methodRep)
@@ -78,9 +79,61 @@ func writeMethodReport(b *strings.Builder, methodRep methodReport) {
 		b.WriteString(fmt.Sprintf("- 说明：%s\n", methodRep.Note))
 	}
 	b.WriteString("\n")
+	writeMethodSection(b, "### 已映射方法", methodRep.Mapped)
 	writeMethodSection(b, "### 不兼容方法", methodRep.Incompatible)
 	writeMethodSection(b, "### 上游独有方法", methodRep.UpstreamOnly)
 	writeMethodSection(b, "### 本地新增方法", methodRep.LocalOnly)
+}
+
+func writeSubpackageReports(b *strings.Builder, reports []subpackageReport) {
+	b.WriteString("## 公开子包导出符号对齐\n\n")
+	if len(reports) == 0 {
+		b.WriteString("无。\n\n")
+		return
+	}
+	b.WriteString("| 子包 | 同步 | 已映射 | 缺失 | 本地新增 |\n")
+	b.WriteString("| --- | ---: | ---: | ---: | ---: |\n")
+	for _, rep := range reports {
+		b.WriteString(fmt.Sprintf(
+			"| `%s` | %d | %d | %d | %d |\n",
+			rep.Name,
+			len(rep.Package.Synced),
+			len(rep.Package.Mapped),
+			len(rep.Package.Missing),
+			len(rep.Package.LocalOnly),
+		))
+	}
+	b.WriteString("\n")
+
+	for _, rep := range reports {
+		writeSymbolSection(
+			b,
+			fmt.Sprintf("### `%s` 缺失的上游公开名", rep.Name),
+			rep.Package.Missing,
+			[]string{"名称", "上游种类", "状态", "说明"},
+			func(f symbolFinding) []string {
+				return []string{fmt.Sprintf("`%s`", f.Name), fmt.Sprintf("`%s`", f.UpstreamKind), f.Status, f.Note}
+			},
+		)
+		if len(rep.Package.Mapped) == 0 {
+			continue
+		}
+		writeSymbolSection(
+			b,
+			fmt.Sprintf("### `%s` 已映射公开名", rep.Name),
+			rep.Package.Mapped,
+			[]string{"名称", "上游种类", "本地种类", "状态", "说明"},
+			func(f symbolFinding) []string {
+				return []string{
+					fmt.Sprintf("`%s`", f.Name),
+					fmt.Sprintf("`%s`", f.UpstreamKind),
+					fmt.Sprintf("`%s`", f.LocalKind),
+					f.Status,
+					f.Note,
+				}
+			},
+		)
+	}
 }
 
 func writeSymbolSection(

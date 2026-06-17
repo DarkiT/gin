@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 
 	original "github.com/gin-gonic/gin"
 )
@@ -155,36 +156,56 @@ var (
 
 	DefaultWriter      = original.DefaultWriter
 	DefaultErrorWriter = original.DefaultErrorWriter
+
+	ginGlobalsMu sync.Mutex
 )
+
+func syncGinGlobalsLocked() {
+	original.DebugPrintRouteFunc = DebugPrintRouteFunc
+	original.DebugPrintFunc = DebugPrintFunc
+	original.DefaultWriter = DefaultWriter
+	original.DefaultErrorWriter = DefaultErrorWriter
+}
+
+func withGinGlobals(fn func() original.HandlerFunc) original.HandlerFunc {
+	ginGlobalsMu.Lock()
+	defer ginGlobalsMu.Unlock()
+	syncGinGlobalsLocked()
+	return fn()
+}
 
 // Bind 返回绑定中间件。
 func Bind(val any) HandlerFunc {
-	return WrapMiddleware(original.Bind(val))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.Bind(val) }))
 }
 
 // WrapF 将标准库 http.HandlerFunc 包装为本项目 HandlerFunc。
 func WrapF(f http.HandlerFunc) HandlerFunc {
-	return WrapMiddleware(original.WrapF(f))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.WrapF(f) }))
 }
 
 // WrapH 将标准库 http.Handler 包装为本项目 HandlerFunc。
 func WrapH(h http.Handler) HandlerFunc {
-	return WrapMiddleware(original.WrapH(h))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.WrapH(h) }))
 }
 
 // BasicAuthForRealm 返回 BasicAuth 中间件。
 func BasicAuthForRealm(accounts Accounts, realm string) HandlerFunc {
-	return WrapMiddleware(original.BasicAuthForRealm(accounts, realm))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.BasicAuthForRealm(accounts, realm)
+	}))
 }
 
 // BasicAuth 返回 BasicAuth 中间件。
 func BasicAuth(accounts Accounts) HandlerFunc {
-	return WrapMiddleware(original.BasicAuth(accounts))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.BasicAuth(accounts) }))
 }
 
 // BasicAuthForProxy 返回代理场景的 BasicAuth 中间件。
 func BasicAuthForProxy(accounts Accounts, realm string) HandlerFunc {
-	return WrapMiddleware(original.BasicAuthForProxy(accounts, realm))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.BasicAuthForProxy(accounts, realm)
+	}))
 }
 
 // SetMode 设置运行模式。
@@ -229,55 +250,67 @@ func ForceConsoleColor() {
 
 // Logger 返回默认日志中间件。
 func Logger() HandlerFunc {
-	return WrapMiddleware(original.Logger())
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.Logger() }))
 }
 
 // LoggerWithFormatter 返回自定义格式的日志中间件。
 func LoggerWithFormatter(f LogFormatter) HandlerFunc {
-	return WrapMiddleware(original.LoggerWithFormatter(f))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.LoggerWithFormatter(f) }))
 }
 
 // LoggerWithWriter 返回写入指定目标的日志中间件。
 func LoggerWithWriter(out io.Writer, notlogged ...string) HandlerFunc {
-	return WrapMiddleware(original.LoggerWithWriter(out, notlogged...))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.LoggerWithWriter(out, notlogged...)
+	}))
 }
 
 // LoggerWithConfig 返回自定义配置的日志中间件。
 func LoggerWithConfig(conf LoggerConfig) HandlerFunc {
-	return WrapMiddleware(original.LoggerWithConfig(toOriginalLoggerConfig(conf)))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.LoggerWithConfig(toOriginalLoggerConfig(conf))
+	}))
 }
 
 // ErrorLogger 返回任意错误类型的错误日志中间件。
 func ErrorLogger() HandlerFunc {
-	return WrapMiddleware(original.ErrorLogger())
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.ErrorLogger() }))
 }
 
 // ErrorLoggerT 返回指定错误类型的错误日志中间件。
 func ErrorLoggerT(typ ErrorType) HandlerFunc {
-	return WrapMiddleware(original.ErrorLoggerT(typ))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.ErrorLoggerT(typ) }))
 }
 
 // Recovery 返回默认恢复中间件。
 func Recovery() HandlerFunc {
-	return WrapMiddleware(original.Recovery())
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc { return original.Recovery() }))
 }
 
 // CustomRecovery 返回自定义恢复中间件。
 func CustomRecovery(handle RecoveryFunc) HandlerFunc {
-	return WrapMiddleware(original.CustomRecovery(wrapOriginalRecoveryFunc(handle)))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.CustomRecovery(wrapOriginalRecoveryFunc(handle))
+	}))
 }
 
 // RecoveryWithWriter 返回写入指定输出的恢复中间件。
 func RecoveryWithWriter(out io.Writer, recovery ...RecoveryFunc) HandlerFunc {
 	if len(recovery) > 0 {
-		return WrapMiddleware(original.RecoveryWithWriter(out, wrapOriginalRecoveryFunc(recovery[0])))
+		return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+			return original.RecoveryWithWriter(out, wrapOriginalRecoveryFunc(recovery[0]))
+		}))
 	}
-	return WrapMiddleware(original.RecoveryWithWriter(out))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.RecoveryWithWriter(out)
+	}))
 }
 
 // CustomRecoveryWithWriter 返回自定义恢复中间件。
 func CustomRecoveryWithWriter(out io.Writer, handle RecoveryFunc) HandlerFunc {
-	return WrapMiddleware(original.CustomRecoveryWithWriter(out, wrapOriginalRecoveryFunc(handle)))
+	return WrapMiddleware(withGinGlobals(func() original.HandlerFunc {
+		return original.CustomRecoveryWithWriter(out, wrapOriginalRecoveryFunc(handle))
+	}))
 }
 
 // Dir 返回静态文件系统。

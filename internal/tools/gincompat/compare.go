@@ -19,20 +19,20 @@ func compareAllMethods() []methodReport {
 	return []methodReport{
 		compareMethods(
 			"Context",
-			reflect.TypeOf(&darkgin.Context{}),
-			reflect.TypeOf(&upgin.Context{}),
+			reflect.TypeFor[*darkgin.Context](),
+			reflect.TypeFor[*upgin.Context](),
 			"同名 wrapper，嵌入原生 gin.Context 并补充增强能力。",
 		),
 		compareMethods(
 			"Engine",
-			reflect.TypeOf(&darkgin.Engine{}),
-			reflect.TypeOf(&upgin.Engine{}),
+			reflect.TypeFor[*darkgin.Engine](),
+			reflect.TypeFor[*upgin.Engine](),
 			"同名 wrapper，嵌入原生 gin.Engine 并增加生命周期、缓存、日志等扩展。",
 		),
 		compareMethods(
 			"Router",
-			reflect.TypeOf(&darkgin.Router{}),
-			reflect.TypeOf(&upgin.RouterGroup{}),
+			reflect.TypeFor[*darkgin.Router](),
+			reflect.TypeFor[*upgin.RouterGroup](),
 			"扩展框架的主路由入口是 Router；上游对应公共入口是 RouterGroup。",
 		),
 	}
@@ -200,6 +200,7 @@ func compareNamedTypes() namedTypeReport {
 func compareMethods(typeName string, local, upstream reflect.Type, note string) methodReport {
 	localMethods := collectMethods(local)
 	upstreamMethods := collectMethods(upstream)
+	mappedMethods := compatibleMappedMethods(typeName)
 
 	report := methodReport{
 		TypeName:       typeName,
@@ -226,6 +227,17 @@ func compareMethods(typeName string, local, upstream reflect.Type, note string) 
 			continue
 		}
 
+		if mapped, ok := mappedMethods[name]; ok {
+			report.Mapped = append(report.Mapped, methodFinding{
+				Name:              name,
+				LocalSignature:    localMethod,
+				UpstreamSignature: upMethod,
+				Status:            "mapped",
+				Note:              mapped,
+			})
+			continue
+		}
+
 		report.Incompatible = append(report.Incompatible, methodFinding{
 			Name:              name,
 			LocalSignature:    localMethod,
@@ -248,6 +260,57 @@ func compareMethods(typeName string, local, upstream reflect.Type, note string) 
 	}
 
 	return report
+}
+
+func compatibleMappedMethods(typeName string) map[string]string {
+	switch typeName {
+	case "Context":
+		return map[string]string{
+			"Copy":    "返回增强 Context wrapper，内部仍携带上游 *gin.Context 副本，用于保持扩展能力。",
+			"Handler": "返回增强 HandlerFunc，底层继续包装当前 gin.HandlerFunc。",
+		}
+	case "Engine":
+		return map[string]string{
+			"Any":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"DELETE":       "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"GET":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Group":        "返回增强 RouterGroup wrapper，内部承载上游 RouterGroup 并保留扩展能力。",
+			"HEAD":         "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Handle":       "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Match":        "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"OPTIONS":      "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"PATCH":        "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"POST":         "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"PUT":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Static":       "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"StaticFS":     "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"StaticFile":   "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"StaticFileFS": "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"Use":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"With":         "本地 OptionFunc 绑定增强 Engine；调用形态与上游一致，配置目标不同。",
+		}
+	case "Router":
+		return map[string]string{
+			"Any":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"DELETE":       "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"GET":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Group":        "返回增强 RouterGroup wrapper，内部承载上游 RouterGroup 并保留扩展能力。",
+			"HEAD":         "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Handle":       "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Match":        "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"OPTIONS":      "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"PATCH":        "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"POST":         "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"PUT":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+			"Static":       "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"StaticFS":     "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"StaticFile":   "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"StaticFileFS": "返回增强 IRoutes；静态资源注册语义委托给上游 Gin。",
+			"Use":          "参数与返回值映射到本项目增强 HandlerFunc/IRoutes；调用方式与上游一致。",
+		}
+	default:
+		return nil
+	}
 }
 
 func collectMethods(t reflect.Type) map[string]string {

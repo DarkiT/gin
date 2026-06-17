@@ -166,6 +166,22 @@ func TestExportCSV_TimeFormat(t *testing.T) {
 	}
 }
 
+func TestExportCSV_StructPointer(t *testing.T) {
+	user := &exportUser{ID: 7, Name: "Pointer", Email: "p@example.com"}
+	content, err := export.ExportCSV(user)
+	if err != nil {
+		t.Fatalf("export csv pointer struct failed: %v", err)
+	}
+	reader := csv.NewReader(bytes.NewReader(content))
+	rows, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	if len(rows) != 1 || rows[0][0] != "7" || rows[0][1] != "Pointer" {
+		t.Fatalf("csv pointer struct content mismatch: %#v", rows)
+	}
+}
+
 func TestExportCSV_Stream(t *testing.T) {
 	dataChan := make(chan any, 1)
 	dataChan <- []exportUser{{ID: 1, Name: "A"}}

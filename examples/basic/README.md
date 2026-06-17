@@ -230,11 +230,11 @@ curl http://localhost:8080/info \
 - `c.Conflict(message)` - 409 Conflict
 - `c.ValidationError(errors)` - 422 Unprocessable Entity
 - `c.InternalError(message)` - 500 Internal Server Error
-- `c.Error(code, message)` - 自定义状态码
+- `c.ErrorResponse(code, message)` - 自定义状态码
 
 ### 3. 参数获取辅助方法
 
-- `c.Param(key, default...)` - 获取字符串参数（路径/查询/表单）
+- `c.Input(key, default...)` - 聚合读取参数（路径/查询/表单）
 - `c.ParamInt(key, default...)` - 获取整数参数
 - `c.ParamInt64(key, default...)` - 获取 int64 参数
 - `c.ParamFloat(key, default...)` - 获取 float64 参数

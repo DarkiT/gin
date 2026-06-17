@@ -63,6 +63,10 @@ func buildReport() (*report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取上游公开符号失败: %w", err)
 	}
+	subpackages, err := compareSubpackages(localModule.Path, upstreamModule.Path)
+	if err != nil {
+		return nil, err
+	}
 
 	return &report{
 		LocalModulePath: localModule.Path,
@@ -71,9 +75,44 @@ func buildReport() (*report, error) {
 		UpstreamVersion: upstreamModule.Version,
 		UpstreamDir:     upstreamModule.Dir,
 		Package:         comparePackageExports(localExports, upstreamExports),
+		Subpackages:     subpackages,
 		NamedTypes:      compareNamedTypes(),
 		Methods:         compareAllMethods(),
 	}, nil
+}
+
+func compareSubpackages(localModule, upstreamModule string) ([]subpackageReport, error) {
+	names := []string{"binding", "render", "codec/json", "ginS"}
+	reports := make([]subpackageReport, 0, len(names))
+	for _, name := range names {
+		localImport := localModule + "/" + name
+		upstreamImport := upstreamModule + "/" + name
+		localDir, err := loadPackageDir(localImport)
+		if err != nil {
+			return nil, fmt.Errorf("读取本地子包 %s 目录失败: %w", localImport, err)
+		}
+		upstreamDir, err := loadPackageDir(upstreamImport)
+		if err != nil {
+			return nil, fmt.Errorf("读取上游子包 %s 目录失败: %w", upstreamImport, err)
+		}
+		localExports, err := collectPackageExports(localDir)
+		if err != nil {
+			return nil, fmt.Errorf("读取本地子包 %s 公开符号失败: %w", localImport, err)
+		}
+		upstreamExports, err := collectPackageExports(upstreamDir)
+		if err != nil {
+			return nil, fmt.Errorf("读取上游子包 %s 公开符号失败: %w", upstreamImport, err)
+		}
+		reports = append(reports, subpackageReport{
+			Name:           name,
+			LocalImport:    localImport,
+			UpstreamImport: upstreamImport,
+			LocalDir:       localDir,
+			UpstreamDir:    upstreamDir,
+			Package:        comparePackageExports(localExports, upstreamExports),
+		})
+	}
+	return reports, nil
 }
 
 func loadCurrentModule() (*moduleInfo, error) {

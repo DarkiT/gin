@@ -3,6 +3,7 @@ package pathutil
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -35,10 +36,8 @@ func SafePath(baseDir, userPath string) (string, error) {
 	segments := strings.FieldsFunc(trimmed, func(r rune) bool {
 		return r == '/' || r == '\\'
 	})
-	for _, seg := range segments {
-		if seg == ".." {
-			return "", ErrInvalidPath
-		}
+	if slices.Contains(segments, "..") {
+		return "", ErrInvalidPath
 	}
 
 	clean := filepath.Clean(trimmed)

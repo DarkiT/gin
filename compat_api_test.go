@@ -2,6 +2,7 @@ package gin_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	darkgin "github.com/darkit/gin"
@@ -11,18 +12,18 @@ import (
 func TestContextCoreMethodSignatures(t *testing.T) {
 	t.Parallel()
 
-	assertMethodSignature(t, "Context", reflect.TypeOf((*darkgin.Context)(nil)), "Param", "(string) -> (string)")
-	assertMethodSignature(t, "Context", reflect.TypeOf((*darkgin.Context)(nil)), "Error", "(error) -> (*gin.Error)")
-	assertMethodSignature(t, "Context", reflect.TypeOf((*darkgin.Context)(nil)), "Negotiate", "(int, gin.Negotiate)")
-	assertMethodSignature(t, "Context", reflect.TypeOf((*darkgin.Context)(nil)), "MustGet", "(interface {}) -> (interface {})")
-	assertMethodSignature(t, "Context", reflect.TypeOf((*darkgin.Context)(nil)), "Copy", "() -> (*gin.Context)")
-	assertMethodSignature(t, "Context", reflect.TypeOf((*darkgin.Context)(nil)), "Handler", "() -> (gin.HandlerFunc)")
+	assertMethodSignature(t, "Context", reflect.TypeFor[*darkgin.Context](), "Param", "(string) -> (string)")
+	assertMethodSignature(t, "Context", reflect.TypeFor[*darkgin.Context](), "Error", "(error) -> (*gin.Error)")
+	assertMethodSignature(t, "Context", reflect.TypeFor[*darkgin.Context](), "Negotiate", "(int, gin.Negotiate)")
+	assertMethodSignature(t, "Context", reflect.TypeFor[*darkgin.Context](), "MustGet", "(interface {}) -> (interface {})")
+	assertMethodSignature(t, "Context", reflect.TypeFor[*darkgin.Context](), "Copy", "() -> (*gin.Context)")
+	assertMethodSignature(t, "Context", reflect.TypeFor[*darkgin.Context](), "Handler", "() -> (gin.HandlerFunc)")
 }
 
 func TestEngineCoreMethodSignatures(t *testing.T) {
 	t.Parallel()
 
-	engineType := reflect.TypeOf((*darkgin.Engine)(nil))
+	engineType := reflect.TypeFor[*darkgin.Engine]()
 	assertMethodSignature(t, "Engine", engineType, "Use", "(...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Engine", engineType, "Handle", "(string, string, ...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Engine", engineType, "GET", "(string, ...gin.HandlerFunc) -> (gin.IRoutes)")
@@ -34,6 +35,7 @@ func TestEngineCoreMethodSignatures(t *testing.T) {
 	assertMethodSignature(t, "Engine", engineType, "OPTIONS", "(string, ...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Engine", engineType, "Any", "(string, ...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Engine", engineType, "Match", "([]string, string, ...gin.HandlerFunc) -> (gin.IRoutes)")
+	assertMethodSignature(t, "Engine", engineType, "Group", "(string, ...gin.HandlerFunc) -> (*gin.Router)")
 	assertMethodSignature(t, "Engine", engineType, "Static", "(string, string) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Engine", engineType, "StaticFS", "(string, http.FileSystem) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Engine", engineType, "StaticFile", "(string, string) -> (gin.IRoutes)")
@@ -44,7 +46,7 @@ func TestEngineCoreMethodSignatures(t *testing.T) {
 func TestRouterCoreMethodSignatures(t *testing.T) {
 	t.Parallel()
 
-	routerType := reflect.TypeOf((*darkgin.Router)(nil))
+	routerType := reflect.TypeFor[*darkgin.Router]()
 	assertMethodSignature(t, "Router", routerType, "Use", "(...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Router", routerType, "Handle", "(string, string, ...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Router", routerType, "GET", "(string, ...gin.HandlerFunc) -> (gin.IRoutes)")
@@ -56,6 +58,7 @@ func TestRouterCoreMethodSignatures(t *testing.T) {
 	assertMethodSignature(t, "Router", routerType, "OPTIONS", "(string, ...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Router", routerType, "Any", "(string, ...gin.HandlerFunc) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Router", routerType, "Match", "([]string, string, ...gin.HandlerFunc) -> (gin.IRoutes)")
+	assertMethodSignature(t, "Router", routerType, "Group", "(string, ...gin.HandlerFunc) -> (*gin.Router)")
 	assertMethodSignature(t, "Router", routerType, "Static", "(string, string) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Router", routerType, "StaticFS", "(string, http.FileSystem) -> (gin.IRoutes)")
 	assertMethodSignature(t, "Router", routerType, "StaticFile", "(string, string) -> (gin.IRoutes)")
@@ -65,7 +68,7 @@ func TestRouterCoreMethodSignatures(t *testing.T) {
 func TestUpstreamStillMatchesExpectedBaselines(t *testing.T) {
 	t.Parallel()
 
-	contextType := reflect.TypeOf((*upstream.Context)(nil))
+	contextType := reflect.TypeFor[*upstream.Context]()
 	assertMethodSignature(t, "UpstreamContext", contextType, "Param", "(string) -> (string)")
 	assertMethodSignature(t, "UpstreamContext", contextType, "Error", "(error) -> (*gin.Error)")
 	assertMethodSignature(t, "UpstreamContext", contextType, "Negotiate", "(int, gin.Negotiate)")
@@ -101,7 +104,7 @@ func formatMethodSignature(fnType reflect.Type) string {
 	}
 
 	outParts := make([]string, 0, outCount)
-	for i := 0; i < outCount; i++ {
+	for i := range outCount {
 		outParts = append(outParts, fnType.Out(i).String())
 	}
 
@@ -112,9 +115,10 @@ func joinParts(parts []string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	result := parts[0]
+	var result strings.Builder
+	result.WriteString(parts[0])
 	for i := 1; i < len(parts); i++ {
-		result += ", " + parts[i]
+		result.WriteString(", " + parts[i])
 	}
-	return result
+	return result.String()
 }
